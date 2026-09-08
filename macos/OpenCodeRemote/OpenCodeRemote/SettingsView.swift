@@ -18,7 +18,7 @@ struct SettingsView: View {
     @State private var telegramAPIRoot: String = ""
     @State private var telegramProxyURL: String = ""
 
-    @State private var loginItemEnabled: Bool = false
+    @State private var loginItemEnabled: Bool = true
     @State private var savedAt: Date?
     @State private var errorMessage: String?
 
@@ -141,7 +141,7 @@ struct SettingsView: View {
         remoteStatePath = cfg.remoteStatePath
         telegramAPIRoot = cfg.telegramAPIRoot
         telegramProxyURL = cfg.telegramProxyURL
-        loginItemEnabled = LoginItemManager.isEnabled
+        loginItemEnabled = true
     }
 
     private func pickWorkspace() {
