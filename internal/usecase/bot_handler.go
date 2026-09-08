@@ -7,9 +7,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
 )
+
+// typingRefreshInterval is how often we re-post the "typing…" chat action
+// while a long-running prompt is in flight. Telegram's chat action expires
+// on the client after roughly five seconds, so anything safely under that
+// keeps the indicator alive for the whole duration.
+const typingRefreshInterval = 4 * time.Second
 
 type Handler struct {
 	navigation    *NavigationService
@@ -17,8 +25,28 @@ type Handler struct {
 	opencode      domain.OpenCodeClient
 	server        domain.OpenCodeServerManager
 	browser       *WorkspaceBrowser
+	notifier      domain.ChatNotifier
+	watcher       SessionController
+	events        domain.SessionEventLog
+	snapshot      domain.SnapshotPublisher
 	workspaceRoot string
 }
+
+// SessionController is the surface Handler needs from the SessionWatcher.
+// It is its own type so tests can supply a fake without dragging in the
+// full polling loop.
+type SessionController interface {
+	Watch(chatID int64, sessionID string)
+}
+
+// SetNotifier attaches a ChatNotifier (typically the Telegram adapter) that
+// the handler can use to push "typing…" indicators while long-running
+// operations are in flight. Passing nil disables the indicator.
+func (h *Handler) SetNotifier(n domain.ChatNotifier) { h.notifier = n }
+
+// SetSessionController wires the SessionWatcher so the handler can keep it
+// pointed at the session the user is currently driving.
+func (h *Handler) SetSessionController(s SessionController) { h.watcher = s }
 
 func NewHandler(navigation *NavigationService, state domain.StateRepository, opencode domain.OpenCodeClient, server domain.OpenCodeServerManager, browser *WorkspaceBrowser) *Handler {
 	return &Handler{
@@ -30,6 +58,14 @@ func NewHandler(navigation *NavigationService, state domain.StateRepository, ope
 		workspaceRoot: browser.Root(),
 	}
 }
+
+// SetSessionEventLog wires the completed-session repository so /continue can
+// reactivate the last task the watcher recorded.
+func (h *Handler) SetSessionEventLog(log domain.SessionEventLog) { h.events = log }
+
+// SetSnapshotPublisher wires the in-process snapshot store so the handler
+// can mark notifications as pending whenever a prompt finishes.
+func (h *Handler) SetSnapshotPublisher(s domain.SnapshotPublisher) { h.snapshot = s }
 
 // StateForTest exposes the underlying StateRepository to tests in the same
 // package. Production code must depend on the Handler port instead.
@@ -55,6 +91,10 @@ func (h *Handler) HandleCommand(ctx context.Context, chatID int64, command strin
 		return h.diff(ctx)
 	case "/undo":
 		return h.undo(ctx)
+	case "/continue":
+		return h.continueLast(ctx, chatID)
+	case "/watch":
+		return h.watch(ctx, chatID, args)
 	default:
 		return domain.BotResponse{Text: "Comando no reconocido. Usa /help."}, nil
 	}
@@ -70,13 +110,15 @@ func helpResponse() domain.BotResponse {
 		"• /status — salud del servidor y proyecto/sesión activos.",
 		"• /diff — archivos modificados por la sesión activa.",
 		"• /undo — revierte el último cambio.",
+		"• /watch [sesión] — vigila la sesión activa (o la indicada) y avisa cuando termine.",
+		"• /continue — reactiva la última sesión completada y abre los cambios.",
 		"• texto libre — prompt directo a la sesión activa.",
 	}, "\n")}
 }
 
 const telegramMaxMessageLen = 4096
 
-func (h *Handler) HandleText(ctx context.Context, _ int64, text string) (domain.BotResponse, error) {
+func (h *Handler) HandleText(ctx context.Context, chatID int64, text string) (domain.BotResponse, error) {
 	if !h.server.StartedSubprocess() {
 		return domain.BotResponse{Text: "El servidor OpenCode está apagado. Ejecuta /init."}, nil
 	}
@@ -87,7 +129,15 @@ func (h *Handler) HandleText(ctx context.Context, _ int64, text string) (domain.
 	if state.SessionID == "" {
 		return domain.BotResponse{Text: "Selecciona primero una sesión con /sessions."}, nil
 	}
+	stopTyping := h.startTypingIndicator(chatID)
 	reply, err := h.opencode.SendPrompt(ctx, state.SessionID, text)
+	stopTyping()
+	if h.watcher != nil {
+		h.watcher.Watch(chatID, state.SessionID)
+	}
+	if h.snapshot != nil {
+		h.snapshot.SetActive(chatID, state.RelativePath, state.SessionID)
+	}
 	if err != nil {
 		return domain.BotResponse{Text: "OpenCode no pudo responder: " + err.Error()}, nil
 	}
@@ -95,6 +145,37 @@ func (h *Handler) HandleText(ctx context.Context, _ int64, text string) (domain.
 		return domain.BotResponse{Text: "OpenCode terminó la respuesta sin texto (revisa /diff por si hubo cambios silenciosos)."}, nil
 	}
 	return domain.BotResponse{Text: truncateForTelegram(reply)}, nil
+}
+
+// startTypingIndicator fires a "typing…" chat action now and keeps
+// refreshing it until the returned cancel function is called. If no notifier
+// is configured it is a no-op that returns a no-op cancel.
+func (h *Handler) startTypingIndicator(chatID int64) (cancel func()) {
+	if h.notifier == nil || chatID == 0 {
+		return func() {}
+	}
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Fire one immediately so the user sees the indicator without delay.
+		_ = h.notifier.NotifyTyping(ctx, chatID)
+		ticker := time.NewTicker(typingRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = h.notifier.NotifyTyping(ctx, chatID)
+			}
+		}
+	}()
+	return func() {
+		cancelCtx()
+		wg.Wait()
+	}
 }
 
 func truncateForTelegram(text string) string {
@@ -108,6 +189,20 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 	parts := strings.SplitN(data, "|", 3)
 	if len(parts) < 2 {
 		return expiredNavigation(), nil
+	}
+	// "co" and "cd" are quick-tap callbacks from the asynchronous
+	// completion notification. They carry the chat id as the second
+	// segment so the handler can confirm the tap originated from the
+	// whitelisted chat.
+	if parts[0] == "co" || parts[0] == "cd" {
+		parsed, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || parsed != chatID {
+			return expiredNavigation(), nil
+		}
+		if parts[0] == "co" {
+			return h.continueLast(ctx, chatID)
+		}
+		return h.diffForCompleted(ctx, chatID)
 	}
 	switch parts[0] {
 	case "e":
@@ -396,7 +491,35 @@ func (h *Handler) diff(ctx context.Context) (domain.BotResponse, error) {
 	if state.SessionID == "" {
 		return domain.BotResponse{Text: "No hay sesión activa."}, nil
 	}
-	changes, err := h.opencode.FileStatus(ctx, state.SessionID)
+	return h.diffSession(ctx, state.SessionID)
+}
+
+// diffForCompleted is the quick-tap variant invoked from the asynchronous
+// "task done" notification. It uses the session id from the latest
+// completed snapshot so users can inspect changes even before tapping
+// "Continuar sesión".
+func (h *Handler) diffForCompleted(ctx context.Context, chatID int64) (domain.BotResponse, error) {
+	if !h.server.StartedSubprocess() {
+		return domain.BotResponse{Text: "El servidor OpenCode está apagado. Ejecuta /init primero."}, nil
+	}
+	if h.events == nil {
+		return domain.BotResponse{Text: "No hay historial de sesiones completadas todavía."}, nil
+	}
+	snapshot, ok, err := h.events.LoadCompletedSession(ctx, chatID)
+	if err != nil {
+		return domain.BotResponse{}, err
+	}
+	if !ok || snapshot.SessionID == "" {
+		return domain.BotResponse{Text: "Aún no registramos ninguna tarea completada."}, nil
+	}
+	return h.diffSession(ctx, snapshot.SessionID)
+}
+
+// diffSession fetches the file status of a specific session and renders
+// it. Shared by /diff and the "Ver cambios" button on the completion
+// notification.
+func (h *Handler) diffSession(ctx context.Context, sessionID string) (domain.BotResponse, error) {
+	changes, err := h.opencode.FileStatus(ctx, sessionID)
 	if err != nil {
 		return domain.BotResponse{}, err
 	}
@@ -425,6 +548,70 @@ func (h *Handler) undo(ctx context.Context) (domain.BotResponse, error) {
 		return domain.BotResponse{}, err
 	}
 	return domain.BotResponse{Text: "Último cambio revertido."}, nil
+}
+
+func (h *Handler) continueLast(ctx context.Context, chatID int64) (domain.BotResponse, error) {
+	if !h.server.StartedSubprocess() {
+		return domain.BotResponse{Text: "El servidor OpenCode está apagado. Ejecuta /init primero."}, nil
+	}
+	if h.events == nil {
+		return domain.BotResponse{Text: "No hay historial de sesiones completadas todavía."}, nil
+	}
+	snapshot, ok, err := h.events.LoadCompletedSession(ctx, chatID)
+	if err != nil {
+		return domain.BotResponse{}, err
+	}
+	if !ok || snapshot.SessionID == "" {
+		return domain.BotResponse{Text: "Aún no registramos ninguna tarea completada. Espera a que OpenCode termine la próxima."}, nil
+	}
+	state, err := h.state.LoadRuntimeState(ctx)
+	if err != nil {
+		return domain.BotResponse{}, err
+	}
+	state.SessionID = snapshot.SessionID
+	if snapshot.ProjectID != "" {
+		state.ProjectID = snapshot.ProjectID
+	}
+	if snapshot.Directory != "" {
+		state.WorkspaceRoot = h.workspaceRoot
+		state.RelativePath = relativeUnderWorkspace(h.workspaceRoot, snapshot.Directory)
+	}
+	if err := h.state.SaveRuntimeState(ctx, state); err != nil {
+		return domain.BotResponse{}, err
+	}
+	preview := snapshot.Preview
+	if preview == "" {
+		preview = "Sesión sin previsualización."
+	}
+	return domain.BotResponse{
+		Text: fmt.Sprintf("Sesión `%s` reactivada.\nProyecto: `%s`\n%s",
+			snapshot.SessionID, orDefault(snapshot.ProjectName, snapshot.Directory), preview),
+	}, nil
+}
+
+func (h *Handler) watch(ctx context.Context, chatID int64, args []string) (domain.BotResponse, error) {
+	if h.watcher == nil {
+		return domain.BotResponse{Text: "El observador de sesiones no está activo."}, nil
+	}
+	if !h.server.StartedSubprocess() {
+		return domain.BotResponse{Text: "El servidor OpenCode está apagado. Ejecuta /init primero."}, nil
+	}
+	state, err := h.state.LoadRuntimeState(ctx)
+	if err != nil {
+		return domain.BotResponse{}, err
+	}
+	target := state.SessionID
+	if len(args) > 0 {
+		target = strings.TrimSpace(args[0])
+	}
+	if target == "" {
+		return domain.BotResponse{Text: "No hay sesión activa que vigilar. Selecciona una con /sessions o pasa un id."}, nil
+	}
+	if chatID == 0 {
+		return domain.BotResponse{Text: "Chat no resuelto para esta orden."}, nil
+	}
+	h.watcher.Watch(chatID, target)
+	return domain.BotResponse{Text: fmt.Sprintf("Vigilando la sesión `%s`. Te aviso por Telegram cuando quede inactiva.", target)}, nil
 }
 
 func expiredNavigation() domain.BotResponse {

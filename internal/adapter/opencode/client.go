@@ -93,6 +93,13 @@ type messageDTO struct {
 	Info messageInfo `json:"info"`
 }
 
+// messageWithPartsDTO is the full projection used by ListMessages; we keep
+// the leaner messageDTO for callers (Revert) that only need the metadata.
+type messageWithPartsDTO struct {
+	Info  messageInfo `json:"info"`
+	Parts []partDTO   `json:"parts"`
+}
+
 type fileChangeDTO struct {
 	Path    string `json:"path"`
 	Added   string `json:"added,omitempty"`
@@ -235,6 +242,37 @@ func (c *Client) FileStatus(ctx context.Context, sessionID string) ([]domain.Fil
 		changes = append(changes, domain.FileChange{Path: change.Path, Status: status})
 	}
 	return changes, nil
+}
+
+// ListMessages returns the messages currently stored in the given session,
+// in the order returned by OpenCode (oldest first). The watcher uses this
+// to detect when a session has gone idle after a prompt and to inspect the
+// parts of the latest assistant message.
+func (c *Client) ListMessages(ctx context.Context, sessionID string) ([]domain.Message, error) {
+	if sessionID == "" {
+		return nil, errors.New("session id must not be empty")
+	}
+	var dto []messageWithPartsDTO
+	path := "/session/" + url.PathEscape(sessionID) + "/message"
+	if err := c.getJSON(ctx, path, &dto); err != nil {
+		return nil, err
+	}
+	messages := make([]domain.Message, 0, len(dto))
+	for _, m := range dto {
+		parts := make([]domain.MessagePart, 0, len(m.Parts))
+		for _, p := range m.Parts {
+			parts = append(parts, domain.MessagePart{Type: p.Type, Text: p.Text})
+		}
+		messages = append(messages, domain.Message{
+			Info: domain.MessageInfo{
+				ID:        m.Info.ID,
+				SessionID: m.Info.SessionID,
+				Role:      m.Info.Role,
+			},
+			Parts: parts,
+		})
+	}
+	return messages, nil
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, target any) error {

@@ -126,3 +126,51 @@ func TestManagerStartRejectsNonDirectory(t *testing.T) {
 		t.Fatal("expected error for file-as-working-dir")
 	}
 }
+
+// TestManagerAdoptsAlreadyRunningServer verifies that Start prefers an
+// external `opencode serve` over spawning its own subprocess. The fakebin
+// exits as soon as the manager tries to launch it, so a successful Start
+// without ever executing the binary proves we adopted the httptest server.
+func TestManagerAdoptsAlreadyRunningServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/global/health") {
+			_, _ = io.WriteString(w, `{"healthy":true,"version":"x"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	// Point the fakebin at a path that exists but cannot be executed so any
+	// attempt to spawn would surface immediately as an error. The adopt
+	// path must short-circuit before reaching exec.LookPath.
+	missingBin := filepath.Join(t.TempDir(), "does-not-exist")
+	manager := opencode.NewManager(opencode.ManagerOptions{
+		Bin:    missingBin,
+		Port:   portFromURL(t, srv.URL),
+		Logger: newDiscardLogger(),
+	})
+
+	dir := t.TempDir()
+	if err := manager.Start(context.Background(), dir); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !manager.StartedSubprocess() {
+		t.Fatal("StartedSubprocess=false after adopting")
+	}
+	if manager.OwnsSubprocess() {
+		t.Fatal("OwnsSubprocess=true; manager should NOT own the adopted server")
+	}
+	if got := manager.WorkingDir(); got != dir {
+		t.Fatalf("WorkingDir=%q, want %q", got, dir)
+	}
+
+	// Stop must not panic and must clear the adopted flag.
+	manager.Stop()
+	if manager.StartedSubprocess() {
+		t.Fatal("StartedSubprocess=true after Stop")
+	}
+	if manager.OwnsSubprocess() {
+		t.Fatal("OwnsSubprocess=true after Stop")
+	}
+}

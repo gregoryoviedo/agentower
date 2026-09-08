@@ -49,6 +49,54 @@ type FileChange struct {
 	Status string
 }
 
+// Message is the lightweight projection of an OpenCode session message
+// used by the session watcher. The wire format only exposes a stable id,
+// the role and the session it belongs to, which is enough for activity
+// tracking. Parts carry the typed segments the model emits; the watcher
+// inspects them to distinguish a fully-formed assistant answer from a
+// stream that is still in progress (e.g. only step-start parts so far).
+type Message struct {
+	Info  MessageInfo
+	Parts []MessagePart
+}
+
+type MessageInfo struct {
+	ID        string
+	SessionID string
+	Role      string
+}
+
+type MessagePart struct {
+	Type string
+	Text string
+}
+
+// CompletedSession is the snapshot of an OpenCode session right after the
+// watcher decided it went idle. The bot stores one per chat and uses it to
+// drive the "task done" notification + the /continue resume flow.
+type CompletedSession struct {
+	ChatID      int64
+	SessionID   string
+	ProjectID   string
+	ProjectName string
+	Directory   string
+	Title       string
+	Preview     string
+	CompletedAt time.Time
+	NotifiedAt  time.Time
+}
+
+// Snapshot is the projected state the bot exposes over its local HTTP
+// control socket so the macOS wrapper can decide when to send the
+// "task done" notification.
+type Snapshot struct {
+	ChatID           int64
+	ActiveProject    string
+	ActiveSession    string
+	LastCompleted    *CompletedSession
+	PendingNotifChat int64
+}
+
 type BotButton struct {
 	Text string
 	Data string

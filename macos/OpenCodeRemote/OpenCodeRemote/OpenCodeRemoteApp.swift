@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var appState: AppState!
     private var botController: BotController!
     private var statusBarController: StatusBarController!
+    private var idleNotifier: IdleNotifier!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         appState = AppState()
@@ -25,9 +26,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         statusBarController = StatusBarController(appState: appState, botController: botController)
+        idleNotifier = IdleNotifier()
+        idleNotifier.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        idleNotifier?.stop()
         botController?.shutdown()
     }
 

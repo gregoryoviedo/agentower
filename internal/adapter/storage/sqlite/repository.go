@@ -51,6 +51,22 @@ func Open(path string) (*Repository, error) {
 		db.Close()
 		return nil, fmt.Errorf("create directory_navigation: %w", err)
 	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS completed_session (
+			chat_id INTEGER PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			project_id TEXT NOT NULL DEFAULT '',
+			project_name TEXT NOT NULL DEFAULT '',
+			directory TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL DEFAULT '',
+			preview TEXT NOT NULL DEFAULT '',
+			completed_at TEXT NOT NULL,
+			notified_at TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create completed_session: %w", err)
+	}
 	return &Repository{db: db}, nil
 }
 
@@ -143,6 +159,69 @@ func (r *Repository) GetNavigation(ctx context.Context, id string) (domain.Navig
 func (r *Repository) DeleteNavigation(ctx context.Context, id string) error {
 	if _, err := r.db.ExecContext(ctx, `DELETE FROM directory_navigation WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete navigation state: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) SaveCompletedSession(ctx context.Context, snapshot domain.CompletedSession) error {
+	completedAt := snapshot.CompletedAt.UTC().Format(time.RFC3339Nano)
+	var notifiedAt string
+	if !snapshot.NotifiedAt.IsZero() {
+		notifiedAt = snapshot.NotifiedAt.UTC().Format(time.RFC3339Nano)
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO completed_session (chat_id, session_id, project_id, project_name, directory, title, preview, completed_at, notified_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id) DO UPDATE SET
+			session_id = excluded.session_id,
+			project_id = excluded.project_id,
+			project_name = excluded.project_name,
+			directory = excluded.directory,
+			title = excluded.title,
+			preview = excluded.preview,
+			completed_at = excluded.completed_at,
+			notified_at = CASE WHEN excluded.notified_at = '' THEN completed_session.notified_at ELSE excluded.notified_at END
+	`,
+		snapshot.ChatID, snapshot.SessionID, snapshot.ProjectID, snapshot.ProjectName,
+		snapshot.Directory, snapshot.Title, snapshot.Preview, completedAt, notifiedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("save completed session: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) LoadCompletedSession(ctx context.Context, chatID int64) (domain.CompletedSession, bool, error) {
+	var snapshot domain.CompletedSession
+	var completedAt, notifiedAt string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT chat_id, session_id, project_id, project_name, directory, title, preview, completed_at, notified_at
+		FROM completed_session WHERE chat_id = ?
+	`, chatID).Scan(&snapshot.ChatID, &snapshot.SessionID, &snapshot.ProjectID, &snapshot.ProjectName,
+		&snapshot.Directory, &snapshot.Title, &snapshot.Preview, &completedAt, &notifiedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.CompletedSession{}, false, nil
+	}
+	if err != nil {
+		return domain.CompletedSession{}, false, fmt.Errorf("load completed session: %w", err)
+	}
+	if t, err := time.Parse(time.RFC3339Nano, completedAt); err == nil {
+		snapshot.CompletedAt = t
+	}
+	if notifiedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, notifiedAt); err == nil {
+			snapshot.NotifiedAt = t
+		}
+	}
+	return snapshot, true, nil
+}
+
+func (r *Repository) MarkNotified(ctx context.Context, chatID int64, when time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE completed_session SET notified_at = ? WHERE chat_id = ?
+	`, when.UTC().Format(time.RFC3339Nano), chatID)
+	if err != nil {
+		return fmt.Errorf("mark completed session notified: %w", err)
 	}
 	return nil
 }

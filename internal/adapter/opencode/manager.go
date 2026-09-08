@@ -15,11 +15,12 @@ import (
 )
 
 const (
-	probeInitialWait = 100 * time.Millisecond
-	probeMaxWait     = 500 * time.Millisecond
-	probeTimeout     = 10 * time.Second
-	startupGrace     = 250 * time.Millisecond
-	shutdownGrace    = 5 * time.Second
+	probeInitialWait  = 100 * time.Millisecond
+	probeMaxWait      = 500 * time.Millisecond
+	probeTimeout      = 10 * time.Second
+	adoptProbeTimeout = 500 * time.Millisecond
+	startupGrace      = 250 * time.Millisecond
+	shutdownGrace     = 5 * time.Second
 )
 
 type Manager struct {
@@ -28,9 +29,10 @@ type Manager struct {
 	probeURL string
 	logger   *slog.Logger
 
-	mu  sync.Mutex
-	cmd *exec.Cmd
-	cwd string
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	cwd      string
+	external bool
 }
 
 type ManagerOptions struct {
@@ -52,24 +54,37 @@ func (m *Manager) Port() int { return m.port }
 
 func (m *Manager) Binary() string { return m.bin }
 
-// StartedSubprocess reports whether the manager currently owns a subprocess.
+// StartedSubprocess reports whether the manager considers a server to be
+// running on the configured port — either because it owns the subprocess or
+// because it adopted an already-running one started outside the bot.
 func (m *Manager) StartedSubprocess() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cmd != nil || m.external
+}
+
+// OwnsSubprocess reports whether the manager started the running server
+// itself. False when the manager merely adopted an externally-started one.
+func (m *Manager) OwnsSubprocess() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cmd != nil
 }
 
-// WorkingDir reports the directory the current subprocess was started in,
-// or empty if no subprocess is running.
+// WorkingDir reports the working directory the manager was started against.
+// For adopted servers this is a hint, not necessarily the server's real cwd.
 func (m *Manager) WorkingDir() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cwd
 }
 
-// Start kills any currently owned subprocess and starts a new `opencode serve`
-// bound to the supplied working directory. It blocks until /global/health
-// returns 200 or probeTimeout elapses.
+// Start prefers an already-running `opencode serve` on the configured port
+// over spawning a new one. If /global/health responds 200, the manager
+// adopts the external server (it does not own the subprocess) and the
+// caller can use it as if it had been started here. Otherwise Start kills
+// any subprocess it owns and spawns a fresh one bound to workingDir. It
+// blocks until the server is healthy or an error is returned.
 func (m *Manager) Start(ctx context.Context, workingDir string) error {
 	if workingDir == "" {
 		return fmt.Errorf("working directory must not be empty")
@@ -81,10 +96,32 @@ func (m *Manager) Start(ctx context.Context, workingDir string) error {
 	}
 
 	m.mu.Lock()
+	// If we already adopted an external server, leave it alone and just
+	// refresh the working-dir hint so subsequent WorkingDir() calls reflect
+	// what the caller asked for.
+	if m.external {
+		m.cwd = workingDir
+		m.mu.Unlock()
+		return nil
+	}
 	m.terminateLocked()
 	m.cmd = nil
 	m.cwd = workingDir
 	m.mu.Unlock()
+
+	// Probe for an external server before spawning to avoid binding the port
+	// twice when the user already has `opencode serve` running on the laptop.
+	adoptCtx, adoptCancel := context.WithTimeout(ctx, adoptProbeTimeout)
+	if err := m.probe(adoptCtx, adoptProbeTimeout); err == nil {
+		adoptCancel()
+		m.mu.Lock()
+		m.external = true
+		m.cwd = workingDir
+		m.mu.Unlock()
+		m.logger.Info("opencode server already running; adopting it", "port", m.port, "cwd", workingDir)
+		return nil
+	}
+	adoptCancel()
 
 	bin, err := exec.LookPath(m.bin)
 	if err != nil {
@@ -128,11 +165,17 @@ func (m *Manager) Start(ctx context.Context, workingDir string) error {
 	return nil
 }
 
+// Stop terminates the subprocess the manager owns. Adopted external servers
+// are never killed — the user explicitly started them and may still be using
+// them outside of this bot.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.terminateLocked()
+	if m.cmd != nil {
+		m.terminateLocked()
+	}
 	m.cmd = nil
+	m.external = false
 	m.cwd = ""
 }
 

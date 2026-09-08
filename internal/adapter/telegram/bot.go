@@ -77,9 +77,58 @@ func (b *Bot) Start() { b.client.Start() }
 
 func (b *Bot) Stop() { b.client.Stop() }
 
+// NotifyTyping posts a "typing…" chat action to the given chat. Telegram
+// actions expire on the client after about five seconds, so callers should
+// invoke this periodically while a long-running operation is in flight.
+func (b *Bot) NotifyTyping(ctx context.Context, chatID int64) error {
+	if chatID == 0 {
+		return fmt.Errorf("chat id must not be zero")
+	}
+	if err := b.client.Notify(tele.ChatID(chatID), tele.Typing); err != nil {
+		b.logger.Warn("telegram typing notification failed", "err", err, "chat_id", chatID)
+		return err
+	}
+	return nil
+}
+
+// SendMessage posts a Markdown-formatted message to the chat. It is used by
+// the control surface to push asynchronous notifications (e.g. "task done,
+// come back") without going through the regular command/response pipeline.
+func (b *Bot) SendMessage(ctx context.Context, chatID int64, text string) error {
+	if chatID == 0 {
+		return fmt.Errorf("chat id must not be zero")
+	}
+	html := markdownToTelegramHTML(text)
+	if _, err := b.client.Send(tele.ChatID(chatID), html, tele.ModeHTML); err != nil {
+		b.logger.Warn("telegram send failed", "err", err, "chat_id", chatID)
+		return err
+	}
+	return nil
+}
+
+// SendResponse is the button-enabled variant used for asynchronous
+// notifications. It mirrors the markup the regular send() applies for
+// command responses so the look-and-feel is consistent.
+func (b *Bot) SendResponse(ctx context.Context, chatID int64, response domain.BotResponse) error {
+	if chatID == 0 {
+		return fmt.Errorf("chat id must not be zero")
+	}
+	html := markdownToTelegramHTML(response.Text)
+	markup := keyboard(response.Buttons)
+	options := []interface{}{tele.ModeHTML}
+	if markup != nil {
+		options = append(options, markup)
+	}
+	if _, err := b.client.Send(tele.ChatID(chatID), html, options...); err != nil {
+		b.logger.Warn("telegram send failed", "err", err, "chat_id", chatID)
+		return err
+	}
+	return nil
+}
+
 func (b *Bot) register(allowedChatID int64) {
 	authorized := middleware.Whitelist(allowedChatID)
-	commands := []string{"/start", "/help", "/status", "/projects", "/init", "/sessions", "/diff", "/changes", "/undo"}
+	commands := []string{"/start", "/help", "/status", "/projects", "/init", "/sessions", "/diff", "/changes", "/undo", "/watch", "/continue"}
 	for _, command := range commands {
 		command := command
 		b.client.Handle(command, func(c tele.Context) error {
@@ -123,6 +172,8 @@ func (b *Bot) registerCommands() error {
 		{Text: "diff", Description: "📝 Cambios de la sesión."},
 		{Text: "changes", Description: "📝 Alias de /diff."},
 		{Text: "undo", Description: "↩️ Revertir último cambio."},
+		{Text: "watch", Description: "👀 Vigilar una sesión hasta que termine."},
+		{Text: "continue", Description: "▶️ Reactivar la última sesión completada."},
 	}
 	if err := b.client.SetCommands(commands); err != nil {
 		return fmt.Errorf("set bot commands: %w", err)
