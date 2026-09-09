@@ -15,6 +15,9 @@ type WorkspaceFS interface {
 type StateRepository interface {
 	LoadRuntimeState(ctx context.Context) (RuntimeState, error)
 	SaveRuntimeState(ctx context.Context, state RuntimeState) error
+	SaveAgentState(ctx context.Context, chatID int64, kind AgentKind, enabled bool) error
+	LoadAgentState(ctx context.Context, chatID int64) (AgentState, error)
+	ListEnabledAgents(ctx context.Context) (map[AgentKind]bool, error)
 }
 
 type NavigationRepository interface {
@@ -23,6 +26,110 @@ type NavigationRepository interface {
 	DeleteNavigation(ctx context.Context, id string) error
 }
 
+// AgentKind identifies which AI agent the bot is talking to for a given
+// chat/project. Every concrete adapter (opencode, claude, codex, kiro,
+// copilot) declares its kind and the registry uses it to dispatch.
+type AgentKind string
+
+const (
+	AgentOpenCode AgentKind = "opencode"
+	AgentClaude   AgentKind = "claude"
+	AgentCodex    AgentKind = "codex"
+	AgentKiro     AgentKind = "kiro"
+	AgentCopilot  AgentKind = "copilot"
+)
+
+// AllAgentKinds returns the supported agent kinds in the order they
+// appear in the Telegram picker. Stable order keeps the picker layout
+// deterministic between renders.
+func AllAgentKinds() []AgentKind {
+	return []AgentKind{AgentOpenCode, AgentClaude, AgentCodex, AgentKiro, AgentCopilot}
+}
+
+// AgentCapabilities describes which features an adapter currently
+// exposes. The detector fills this in at boot from the binary's
+// --help output or a handshake, and the Telegram UI hides commands
+// the active agent does not support.
+type AgentCapabilities struct {
+	Health        bool
+	ListProjects  bool
+	ListSessions  bool
+	CreateSession bool
+	SendPrompt    bool
+	Revert        bool
+	FileStatus    bool
+	ListMessages  bool
+}
+
+// AgentDescriptor is the boot-time fingerprint of a single agent: where
+// the binary lives, whether it is already running, and what it can do.
+type AgentDescriptor struct {
+	Kind         AgentKind
+	DisplayName  string
+	Bin          string
+	Port         int
+	Detected     bool   // the binary is reachable in PATH or the configured bundle path
+	Running      bool   // the agent's local server (if any) is already up
+	Available    bool   // the adapter is implemented and the binary handshake succeeded
+	Capabilities AgentCapabilities
+	Reason       string // human-readable explanation when Available=false
+}
+
+// AgentAdapter is the per-agent transport (HTTP, stdio JSON-RPC, LSP,
+// etc.). Every concrete adapter — opencode/claude/codex/kiro/copilot
+// — implements this surface and the registry uses Kind() to route
+// commands to the right instance.
+type AgentAdapter interface {
+	Kind() AgentKind
+	DisplayName() string
+	Health(ctx context.Context) (HealthStatus, error)
+	ListProjects(ctx context.Context) ([]Project, error)
+	ListSessions(ctx context.Context) ([]Session, error)
+	CreateSession(ctx context.Context, parentID string) (Session, error)
+	SendPrompt(ctx context.Context, sessionID, text string) (string, error)
+	Revert(ctx context.Context, sessionID string) error
+	FileStatus(ctx context.Context, sessionID string) ([]FileChange, error)
+	ListMessages(ctx context.Context, sessionID string) ([]Message, error)
+}
+
+// AgentRegistry is the read/write facade over the set of adapters the
+// bot knows about. It hides concrete adapter construction (lazy,
+// per-chat) and tracks which agent each chat is currently driving.
+type AgentRegistry interface {
+	// Descriptors returns the boot-time fingerprints for every known
+	// agent. The Telegram picker iterates over this list.
+	Descriptors() []AgentDescriptor
+	// Available returns only the descriptors whose adapter is fully
+	// implemented and the binary is detected.
+	Available() []AgentDescriptor
+	// Get returns the adapter for the given kind. ErrAgentUnavailable
+	// if the kind is not Available; ErrAgentCapabilitiesLimited if the
+	// caller invoked an unsupported method on a partial adapter.
+	Get(kind AgentKind) (AgentAdapter, error)
+	// Active returns the agent the chat is currently driving. The empty
+	// AgentKind is returned when nothing has been picked yet.
+	Active(chatID int64) (AgentKind, error)
+	// SetActive persists the chat's agent pick. Idempotent.
+	SetActive(chatID int64, kind AgentKind) error
+}
+
+// AgentServerManager owns the subprocess lifecycle of every agent
+// simultaneously. Each kind has its own slot, so two agents can be
+// running at the same time and the bot can switch the "active" one in
+// Telegram without tearing the others down.
+type AgentServerManager interface {
+	Start(ctx context.Context, kind AgentKind, workingDir string) error
+	Stop(kind AgentKind)
+	StopAll()
+	StartedSubprocess(kind AgentKind) bool
+	OwnsSubprocess(kind AgentKind) bool
+	WorkingDir(kind AgentKind) string
+}
+
+// OpenCodeClient is the legacy single-agent port. It is kept as a
+// thin alias of AgentAdapter so existing usecase code keeps compiling
+// during the migration. New code should depend on AgentAdapter (or
+// AgentRegistry) instead.
 type OpenCodeClient interface {
 	Health(ctx context.Context) (HealthStatus, error)
 	ListProjects(ctx context.Context) ([]Project, error)
@@ -87,9 +194,10 @@ type ChatNotifier interface {
 	SendResponse(ctx context.Context, chatID int64, response BotResponse) error
 }
 
-// OpenCodeServerManager owns the lifecycle of the local OpenCode serve
-// subprocess. Implementations are expected to swap the running subprocess
-// atomically when Start is called again with a different working dir.
+// OpenCodeServerManager is the legacy single-agent subprocess port. It
+// mirrors the methods of AgentServerManager for the opencode slot only
+// and is kept so existing usecase code keeps compiling during the
+// migration. New code should depend on AgentServerManager.
 type OpenCodeServerManager interface {
 	Start(ctx context.Context, workingDir string) error
 	Stop()

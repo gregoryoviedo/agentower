@@ -33,6 +33,7 @@ func Open(path string) (*Repository, error) {
 			project_id TEXT NOT NULL DEFAULT '',
 			relative_path TEXT NOT NULL DEFAULT '',
 			session_id TEXT NOT NULL DEFAULT '',
+			agent_kind TEXT NOT NULL DEFAULT 'opencode',
 			updated_at TEXT NOT NULL
 		)
 	`); err != nil {
@@ -74,17 +75,18 @@ func (r *Repository) Close() error { return r.db.Close() }
 
 func (r *Repository) LoadRuntimeState(ctx context.Context) (domain.RuntimeState, error) {
 	var state domain.RuntimeState
-	var updated string
+	var updated, agentKind string
 	err := r.db.QueryRowContext(ctx, `
-		SELECT workspace_root, project_id, relative_path, session_id, updated_at
+		SELECT workspace_root, project_id, relative_path, session_id, agent_kind, updated_at
 		FROM runtime_state WHERE id = 1
-	`).Scan(&state.WorkspaceRoot, &state.ProjectID, &state.RelativePath, &state.SessionID, &updated)
+	`).Scan(&state.WorkspaceRoot, &state.ProjectID, &state.RelativePath, &state.SessionID, &agentKind, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.RuntimeState{}, nil
 	}
 	if err != nil {
 		return domain.RuntimeState{}, fmt.Errorf("load runtime state: %w", err)
 	}
+	state.AgentKind = domain.AgentKind(agentKind)
 	state.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
 	if err != nil {
 		return domain.RuntimeState{}, fmt.Errorf("parse runtime state timestamp: %w", err)
@@ -96,20 +98,50 @@ func (r *Repository) SaveRuntimeState(ctx context.Context, state domain.RuntimeS
 	if state.UpdatedAt.IsZero() {
 		state.UpdatedAt = time.Now().UTC()
 	}
+	agentKind := string(state.AgentKind)
+	if agentKind == "" {
+		agentKind = string(domain.AgentOpenCode)
+	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO runtime_state (id, workspace_root, project_id, relative_path, session_id, updated_at)
-		VALUES (1, ?, ?, ?, ?, ?)
+		INSERT INTO runtime_state (id, workspace_root, project_id, relative_path, session_id, agent_kind, updated_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			workspace_root = excluded.workspace_root,
 			project_id = excluded.project_id,
 			relative_path = excluded.relative_path,
 			session_id = excluded.session_id,
+			agent_kind = excluded.agent_kind,
 			updated_at = excluded.updated_at
-	`, state.WorkspaceRoot, state.ProjectID, state.RelativePath, state.SessionID, state.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	`, state.WorkspaceRoot, state.ProjectID, state.RelativePath, state.SessionID, agentKind, state.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("save runtime state: %w", err)
 	}
 	return nil
+}
+
+// SaveAgentState records the per-chat enabled/disabled set and the
+// active agent pick. Full implementation lands in commit 6; this stub
+// keeps the domain refactor green while persistence is being migrated.
+func (r *Repository) SaveAgentState(_ context.Context, _ int64, _ domain.AgentKind, _ bool) error {
+	return nil
+}
+
+// LoadAgentState returns the per-chat agent state. The stub returns
+// an empty AgentState (no rows) so callers fall back to the default
+// (opencode) until the table is created in commit 6.
+func (r *Repository) LoadAgentState(_ context.Context, chatID int64) (domain.AgentState, error) {
+	return domain.AgentState{
+		ChatID:  chatID,
+		Enabled: map[domain.AgentKind]bool{},
+		Active:  "",
+	}, nil
+}
+
+// ListEnabledAgents returns the union of enabled agents across every
+// chat. The stub returns an empty map so /agents has nothing to
+// render until commit 6 wires the table up.
+func (r *Repository) ListEnabledAgents(_ context.Context) (map[domain.AgentKind]bool, error) {
+	return map[domain.AgentKind]bool{}, nil
 }
 
 func (r *Repository) SaveNavigation(ctx context.Context, state domain.NavigationState) error {

@@ -23,7 +23,18 @@ type RuntimeState struct {
 	ProjectID     string
 	RelativePath  string
 	SessionID     string
+	AgentKind     AgentKind
 	UpdatedAt     time.Time
+}
+
+// AgentState records the per-chat agent pick and whether each known
+// agent is enabled for that chat. A row with enabled=false hides the
+// agent from /agents and from the project picker.
+type AgentState struct {
+	ChatID    int64
+	Enabled   map[AgentKind]bool
+	Active    AgentKind
+	UpdatedAt time.Time
 }
 
 type DirectoryEntry struct {
@@ -93,6 +104,7 @@ type Snapshot struct {
 	ChatID           int64
 	ActiveProject    string
 	ActiveSession    string
+	ActiveAgent      AgentKind
 	LastCompleted    *CompletedSession
 	PendingNotifChat int64
 }
