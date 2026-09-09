@@ -19,6 +19,13 @@ remote-bot
 *.db-shm
 *.db-wal
 
+# Test fixtures built on the fly
+internal/adapter/**/testdata/fakeclaude
+internal/adapter/**/testdata/fakecodex
+internal/adapter/**/testdata/fakekiro
+internal/adapter/**/testdata/fakecopilot
+internal/adapter/**/testdata/fake-*
+
 # Editor
 .vscode/
 .idea/

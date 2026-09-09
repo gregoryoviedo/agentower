@@ -55,7 +55,7 @@ func (d *Detector) scanOne(ctx context.Context, kind domain.AgentKind) domain.Ag
 	case domain.AgentOpenCode:
 		return d.scanOpenCode(ctx)
 	case domain.AgentClaude:
-		return d.scanProbeOnly(ctx, domain.AgentClaude, "claude", DefaultClaudePort, true, true, true, true, true, true, true)
+		return d.scanClaude(ctx)
 	case domain.AgentCodex:
 		return d.scanProbeOnly(ctx, domain.AgentCodex, "codex", DefaultCodexPort, true, true, true, true, true, true, true)
 	case domain.AgentKiro:
@@ -116,7 +116,32 @@ func (d *Detector) scanProbeOnly(ctx context.Context, kind domain.AgentKind, bin
 	return desc
 }
 
-// scanCopilot handles the special detection for GitHub Copilot. The
+func (d *Detector) scanClaude(ctx context.Context) domain.AgentDescriptor {
+	bin, _ := d.LookPath("claude")
+	desc := domain.AgentDescriptor{
+		Kind:        domain.AgentClaude,
+		DisplayName: "Claude",
+		Bin:         bin,
+		Port:        DefaultClaudePort,
+		Detected:    bin != "",
+		Available:   bin != "",
+		Capabilities: domain.AgentCapabilities{
+			Health:        true,
+			ListProjects:  false, // Claude Code does not expose a server-side project list
+			ListSessions:  true,
+			CreateSession: true,
+			SendPrompt:    true,
+			Revert:        false, // Claude Code has no revert endpoint
+			FileStatus:    true,  // falls back to `git diff` in the adapter
+			ListMessages:  true,
+		},
+	}
+	if bin == "" {
+		desc.Reason = "no se encontró el binario claude en PATH"
+	}
+	desc.Running = d.detectPortOpen(ctx, DefaultClaudePort, "/") // best-effort HTTP probe
+	return desc
+}
 // binary is not always in PATH; we also look inside the VS Code
 // extension bundles for github.copilot and github.copilot-chat.
 func (d *Detector) scanCopilot(ctx context.Context) domain.AgentDescriptor {
