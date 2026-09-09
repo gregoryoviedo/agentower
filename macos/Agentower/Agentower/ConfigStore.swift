@@ -15,8 +15,8 @@ struct BotConfiguration: Equatable {
 
     // Per-agent settings, keyed by AgentKind (lowercase). Opencode is
     // always present so the existing single-agent Settings keep working.
-    // The other four default to "Próximamente" (available=false) and
-    // become editable as their adapters ship.
+    // Each row's available flag is true once the binary is detected
+    // (PATH for the standard CLIs; VS Code extension bundle for Copilot).
     var agents: [String: AgentSettings] = [:]
 
     var isValid: Bool {
@@ -142,21 +142,29 @@ final class ConfigStore {
     }
 
     /// Detected returns the list of agent kinds whose binary the
-    /// wrapper can find in PATH. Used to render the enabled-by-default
-    /// state in the Settings UI.
+    /// wrapper can find. PATH is the first source; for copilot we also
+    /// fall back to `copilot-language-server` and the VS Code / VS Code
+    /// Server extension bundles, mirroring the Go detector
+    /// (internal/adapter/agents/detector.go:scanCopilot).
     static func detectAgentsInPath() -> [String: String] {
         var found: [String: String] = [:]
-        let candidates: [(String, String)] = [
-            ("opencode", "opencode"),
-            ("claude", "claude"),
-            ("codex", "codex"),
-            ("kiro", "kiro"),
-            ("copilot", "copilot"),
+        let pathCandidates: [(String, [String])] = [
+            ("opencode", ["opencode"]),
+            ("claude",   ["claude"]),
+            ("codex",    ["codex"]),
+            ("kiro",     ["kiro"]),
+            ("copilot",  ["copilot", "copilot-language-server"]),
         ]
-        for (kind, binary) in candidates {
-            if let path = Self.which(binary) {
-                found[kind] = path
+        for (kind, binaries) in pathCandidates {
+            for binary in binaries {
+                if let path = Self.which(binary) {
+                    found[kind] = path
+                    break
+                }
             }
+        }
+        if found["copilot"] == nil, let bundle = findVSCodeCopilotBundle() {
+            found["copilot"] = bundle
         }
         return found
     }
@@ -180,6 +188,39 @@ final class ConfigStore {
         } catch {
             return nil
         }
+    }
+
+    /// Mirrors Go's findVSCodeCopilotBundle: scans the user's VS Code
+    /// install for the github.copilot* extension folder and returns the
+    /// newest version's dist/extension.js (the LSP entry point).
+    private static func findVSCodeCopilotBundle() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let roots = [
+            ".vscode/extensions",
+            ".vscode-server/extensions",
+        ]
+        let prefixes = ["github.copilot-", "github.copilot-chat-"]
+        for root in roots {
+            let dir = home.appendingPathComponent(root)
+            guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            ) else { continue }
+            for prefix in prefixes {
+                let matches = entries
+                    .filter { $0.lastPathComponent.hasPrefix(prefix) }
+                    .map { $0.lastPathComponent }
+                    .sorted()
+                if let newest = matches.last {
+                    let bundle = dir
+                        .appendingPathComponent(newest)
+                        .appendingPathComponent("dist/extension.js")
+                    if FileManager.default.fileExists(atPath: bundle.path) {
+                        return bundle.path
+                    }
+                }
+            }
+        }
+        return nil
     }
 
     private func loadAgents(cfg: BotConfiguration) -> [String: AgentSettings] {

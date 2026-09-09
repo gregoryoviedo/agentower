@@ -23,6 +23,7 @@ struct SettingsView: View {
     @State private var loginItemEnabled: Bool = true
     @State private var savedAt: Date?
     @State private var errorMessage: String?
+    @State private var selectedTab: SettingsTab = .telegram
 
     @FocusState private var focusedField: Field?
     private enum Field: Hashable {
@@ -30,49 +31,42 @@ struct SettingsView: View {
         case agentBin(Int), agentArgs(Int)
     }
 
+    private enum SettingsTab: String, CaseIterable, Identifiable {
+        case telegram, agents, advanced, login
+        var id: Self { self }
+        var title: String {
+            switch self {
+            case .telegram: return "Telegram"
+            case .agents:   return "Agentes"
+            case .advanced: return "Avanzado"
+            case .login:    return "Inicio"
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Form {
-                Section("Bot de Telegram") {
-                    LabeledContent("WORKSPACE_ROOT") {
-                        HStack {
-                            TextField("/Users/you/dev", text: $workspaceRoot)
-                                .textFieldStyle(.roundedBorder)
-                                .focused($focusedField, equals: .workspaceRoot)
-                                .onPasteCommand(of: [UTType.text]) { handlePaste(into: .workspaceRoot, providers: $0) }
-                            Button("Elegir…") { pickWorkspace() }
-                        }
-                    }
-                    LabeledContent("TELEGRAM_BOT_TOKEN") {
-                        SecureField("token de @BotFather", text: $telegramBotToken)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($focusedField, equals: .token)
-                            .onPasteCommand(of: [UTType.text]) { handlePaste(into: .token, providers: $0) }
-                    }
-                    LabeledContent("ALLOWED_CHAT_ID") {
-                        TextField("id numérico", text: $allowedChatID)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($focusedField, equals: .chatID)
-                            .onPasteCommand(of: [UTType.text]) { handlePaste(into: .chatID, providers: $0) }
-                    }
+            Picker("", selection: $selectedTab) {
+                ForEach(SettingsTab.allCases) { tab in
+                    Text(tab.title).tag(tab)
                 }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
 
-                agentsSection
-                opencodeBackCompatSection
-                advancedSection
-
-                Section("Inicio de sesión") {
-                    Toggle("Iniciar Agentower al arrancar macOS", isOn: $loginItemEnabled)
-                        .disabled(!LoginItemManager.isInstalledInApplications)
-                    if !LoginItemManager.isInstalledInApplications {
-                        Text("Para usar auto-inicio, copia la app a /Applications.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            Form {
+                switch selectedTab {
+                case .telegram: telegramSection
+                case .agents:   agentsFormContent
+                case .advanced: advancedSection
+                case .login:    loginSection
                 }
             }
             .formStyle(.grouped)
-            .frame(minWidth: 560, minHeight: 580)
+            .frame(minWidth: 560, minHeight: 460)
 
             Divider()
             HStack {
@@ -103,7 +97,55 @@ struct SettingsView: View {
         .onAppear { load() }
     }
 
+    // MARK: - Sections (per tab)
+
+    @ViewBuilder
+    private var telegramSection: some View {
+        Section("Bot de Telegram") {
+            LabeledContent("WORKSPACE_ROOT") {
+                HStack {
+                    TextField("/Users/you/dev", text: $workspaceRoot)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .workspaceRoot)
+                        .onPasteCommand(of: [UTType.text]) { handlePaste(into: .workspaceRoot, providers: $0) }
+                    Button("Elegir…") { pickWorkspace() }
+                }
+            }
+            LabeledContent("TELEGRAM_BOT_TOKEN") {
+                SecureField("token de @BotFather", text: $telegramBotToken)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .token)
+                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .token, providers: $0) }
+            }
+            LabeledContent("ALLOWED_CHAT_ID") {
+                TextField("id numérico", text: $allowedChatID)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .chatID)
+                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .chatID, providers: $0) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var loginSection: some View {
+        Section("Inicio de sesión") {
+            Toggle("Iniciar Agentower al arrancar macOS", isOn: $loginItemEnabled)
+                .disabled(!LoginItemManager.isInstalledInApplications)
+            if !LoginItemManager.isInstalledInApplications {
+                Text("Para usar auto-inicio, copia la app a /Applications.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     // MARK: - Sections
+
+    @ViewBuilder
+    private var agentsFormContent: some View {
+        agentsSection
+        opencodeBackCompatSection
+    }
 
     private var agentsSection: some View {
         Section("Agentes de IA") {
@@ -111,7 +153,7 @@ struct SettingsView: View {
                 agentRow(row: $row)
             }
             HStack {
-                Text("Detecta los binarios en PATH y permite habilitar cada agente desde Telegram con /agents.")
+                Text("Detecta los binarios en PATH (y los bundles de VS Code para Copilot) y permite habilitar cada agente desde Telegram con /agents.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -217,10 +259,16 @@ struct SettingsView: View {
     // MARK: - Helpers
 
     private func disableReason(for row: AgentRow) -> String {
-        if row.detectedPath == nil {
-            return "Próximamente — binario no encontrado"
+        if let path = row.detectedPath {
+            return "Detectado en \(path)"
         }
-        return "Próximamente"
+        let hint: String
+        switch row.kind {
+        case "copilot": hint = "instala la extensión GitHub Copilot en VS Code o añade `copilot` a PATH"
+        case "opencode": hint = "instala opencode CLI y asegúrate de que esté en PATH"
+        default:        hint = "instala \(ConfigStore.displayName(for: row.kind)) y asegúrate de que esté en PATH"
+        }
+        return "No se encontró el binario — \(hint)"
     }
 
     private func runDetection() {
