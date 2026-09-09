@@ -68,7 +68,65 @@ func Open(path string) (*Repository, error) {
 		db.Close()
 		return nil, fmt.Errorf("create completed_session: %w", err)
 	}
+	if err := migrateAgentState(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Repository{db: db}, nil
+}
+
+// migrateAgentState installs the per-chat agent_state table and applies
+// the runtime_state.agent_kind column for databases created before the
+// multi-agent migration. Both checks are no-ops on already-up-to-date
+// schemas so callers can invoke Open on every boot without paying for a
+// migration every time.
+func migrateAgentState(db *sql.DB) error {
+	ensureColumn := func(table, column, def string) error {
+		rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", table, err)
+		}
+		defer rows.Close()
+		hasColumn := false
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				return fmt.Errorf("scan %s column: %w", table, err)
+			}
+			if name == column {
+				hasColumn = true
+				break
+			}
+		}
+		if hasColumn {
+			return nil
+		}
+		stmt := `ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` TEXT NOT NULL DEFAULT '` + def + `'`
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", table, column, err)
+		}
+		return nil
+	}
+	if err := ensureColumn("runtime_state", "agent_kind", "opencode"); err != nil {
+		return err
+	}
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_state (
+			chat_id INTEGER NOT NULL,
+			agent_kind TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			active INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (chat_id, agent_kind)
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("create agent_state: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) Close() error { return r.db.Close() }
@@ -119,29 +177,103 @@ func (r *Repository) SaveRuntimeState(ctx context.Context, state domain.RuntimeS
 	return nil
 }
 
-// SaveAgentState records the per-chat enabled/disabled set and the
-// active agent pick. Full implementation lands in commit 6; this stub
-// keeps the domain refactor green while persistence is being migrated.
-func (r *Repository) SaveAgentState(_ context.Context, _ int64, _ domain.AgentKind, _ bool) error {
+// SaveAgentState toggles the enabled flag for one (chatID, kind) pair
+// and flips the active marker if this is the first time the user
+// picks this kind for the chat. The function is idempotent and
+// upserts on conflict.
+func (r *Repository) SaveAgentState(ctx context.Context, chatID int64, kind domain.AgentKind, enabled bool) error {
+	enabledFlag := 0
+	if enabled {
+		enabledFlag = 1
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO agent_state (chat_id, agent_kind, enabled, active, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id, agent_kind) DO UPDATE SET
+			enabled = excluded.enabled,
+			updated_at = excluded.updated_at
+	`, chatID, string(kind), enabledFlag, 0, now)
+	if err != nil {
+		return fmt.Errorf("save agent state: %w", err)
+	}
+	if enabled {
+		// When an agent is enabled it becomes the active one for that
+		// chat; when it is disabled we leave the active marker alone
+		// so the picker remembers the previous pick.
+		if _, err := r.db.ExecContext(ctx, `UPDATE agent_state SET active = 0 WHERE chat_id = ?`, chatID); err != nil {
+			return fmt.Errorf("clear active marker: %w", err)
+		}
+		_, err = r.db.ExecContext(ctx, `
+			UPDATE agent_state SET active = 1, updated_at = ?
+			WHERE chat_id = ? AND agent_kind = ?
+		`, now, chatID, string(kind))
+		if err != nil {
+			return fmt.Errorf("set active marker: %w", err)
+		}
+	}
 	return nil
 }
 
-// LoadAgentState returns the per-chat agent state. The stub returns
-// an empty AgentState (no rows) so callers fall back to the default
-// (opencode) until the table is created in commit 6.
-func (r *Repository) LoadAgentState(_ context.Context, chatID int64) (domain.AgentState, error) {
-	return domain.AgentState{
+// LoadAgentState returns the per-chat enabled flags plus the active
+// pick. The Enabled map always contains a row for every kind the
+// caller may iterate over, even when the table is empty (defaults
+// to enabled for opencode).
+func (r *Repository) LoadAgentState(ctx context.Context, chatID int64) (domain.AgentState, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT agent_kind, enabled, active
+		FROM agent_state
+		WHERE chat_id = ?
+	`, chatID)
+	if err != nil {
+		return domain.AgentState{}, fmt.Errorf("load agent state: %w", err)
+	}
+	defer rows.Close()
+	state := domain.AgentState{
 		ChatID:  chatID,
 		Enabled: map[domain.AgentKind]bool{},
-		Active:  "",
-	}, nil
+	}
+	for rows.Next() {
+		var kind string
+		var enabled, active int
+		if err := rows.Scan(&kind, &enabled, &active); err != nil {
+			return domain.AgentState{}, fmt.Errorf("scan agent state: %w", err)
+		}
+		state.Enabled[domain.AgentKind(kind)] = enabled != 0
+		if active != 0 {
+			state.Active = domain.AgentKind(kind)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return domain.AgentState{}, err
+	}
+	if len(state.Enabled) == 0 {
+		state.Enabled[domain.AgentOpenCode] = true
+		state.Active = domain.AgentOpenCode
+	}
+	return state, nil
 }
 
 // ListEnabledAgents returns the union of enabled agents across every
-// chat. The stub returns an empty map so /agents has nothing to
-// render until commit 6 wires the table up.
-func (r *Repository) ListEnabledAgents(_ context.Context) (map[domain.AgentKind]bool, error) {
-	return map[domain.AgentKind]bool{}, nil
+// chat. Useful for /agents when the user wants a global view of
+// which agents have ever been turned on.
+func (r *Repository) ListEnabledAgents(ctx context.Context) (map[domain.AgentKind]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT agent_kind FROM agent_state WHERE enabled = 1
+	`)
+	if err != nil {
+		return map[domain.AgentKind]bool{}, fmt.Errorf("list enabled agents: %w", err)
+	}
+	defer rows.Close()
+	out := map[domain.AgentKind]bool{}
+	for rows.Next() {
+		var kind string
+		if err := rows.Scan(&kind); err != nil {
+			return out, err
+		}
+		out[domain.AgentKind(kind)] = true
+	}
+	return out, rows.Err()
 }
 
 // CountLegacySessions returns the number of rows in runtime_state
