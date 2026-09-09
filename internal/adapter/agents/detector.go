@@ -7,7 +7,6 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/gregoryoviedo/agentower/internal/domain"
 )
@@ -59,7 +58,7 @@ func (d *Detector) scanOne(ctx context.Context, kind domain.AgentKind) domain.Ag
 	case domain.AgentCodex:
 		return d.scanCodex(ctx)
 	case domain.AgentKiro:
-		return d.scanProbeOnly(ctx, domain.AgentKiro, "kiro", DefaultKiroPort, true, false, false, false, true, false, false)
+		return d.scanKiro(ctx)
 	case domain.AgentCopilot:
 		return d.scanCopilot(ctx)
 	default:
@@ -86,33 +85,6 @@ func (d *Detector) scanOpenCode(ctx context.Context) domain.AgentDescriptor {
 		desc.Reason = "no se encontró el binario opencode en PATH"
 	}
 	desc.Running = d.detectPortOpen(ctx, DefaultOpenCodePort, "/global/health")
-	return desc
-}
-
-func (d *Detector) scanProbeOnly(ctx context.Context, kind domain.AgentKind, binName string, port int, send, list, create, revert, files, msgs, proj bool) domain.AgentDescriptor {
-	bin, _ := d.LookPath(binName)
-	desc := domain.AgentDescriptor{
-		Kind:        kind,
-		DisplayName: strings.Title(string(kind)),
-		Bin:         bin,
-		Port:        port,
-		Detected:    bin != "",
-		Available:   false,
-		Reason:      "Próximamente",
-		Capabilities: domain.AgentCapabilities{
-			SendPrompt:    send,
-			ListSessions:  list,
-			CreateSession: create,
-			Revert:        revert,
-			FileStatus:    files,
-			ListMessages:  msgs,
-			ListProjects:  proj,
-			Health:        true,
-		},
-	}
-	if bin == "" {
-		desc.Reason = "binario no encontrado en PATH"
-	}
 	return desc
 }
 
@@ -167,6 +139,33 @@ func (d *Detector) scanCodex(ctx context.Context) domain.AgentDescriptor {
 		desc.Reason = "no se encontró el binario codex en PATH"
 	}
 	desc.Running = d.detectPortOpen(ctx, DefaultCodexPort, "/")
+	return desc
+}
+
+func (d *Detector) scanKiro(ctx context.Context) domain.AgentDescriptor {
+	bin, _ := d.LookPath("kiro")
+	desc := domain.AgentDescriptor{
+		Kind:        domain.AgentKiro,
+		DisplayName: "Kiro",
+		Bin:         bin,
+		Port:        DefaultKiroPort,
+		Detected:    bin != "",
+		Available:   bin != "",
+		Capabilities: domain.AgentCapabilities{
+			Health:        true,
+			ListProjects:  false,
+			ListSessions:  false,
+			CreateSession: true,
+			SendPrompt:    true,
+			Revert:        false,
+			FileStatus:    false, // Kiro does not expose file diffs natively
+			ListMessages:  false,
+		},
+	}
+	if bin == "" {
+		desc.Reason = "no se encontró el binario kiro en PATH"
+	}
+	desc.Running = d.detectPortOpen(ctx, DefaultKiroPort, "/")
 	return desc
 }
 // binary is not always in PATH; we also look inside the VS Code

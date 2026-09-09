@@ -15,6 +15,7 @@ import (
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/claude"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/codex"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/kiro"
 	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
 	"github.com/gregoryoviedo/agentower/internal/adapter/telegram"
@@ -79,6 +80,7 @@ func main() {
 	})
 	claudeManager := claude.NewManager("claude", agents.DefaultClaudePort)
 	codexManager := codex.NewManager("codex", agents.DefaultCodexPort)
+	kiroManager := kiro.NewManager("kiro", agents.DefaultKiroPort)
 
 	registry := agents.NewRegistry(agents.RegistryOptions{
 		Descriptors: descriptors,
@@ -87,9 +89,9 @@ func main() {
 	registry.Register(domain.AgentOpenCode, func() (domain.AgentAdapter, error) {
 		return opencodeClient, nil
 	})
-	// The Claude and Codex adapters are wired only when the binary
-	// was detected at boot so users without the CLI installed don't
-	// see a registered adapter that the manager cannot drive.
+	// The third-party adapters are wired only when the binary was
+	// detected at boot so users without the CLI installed don't see a
+	// registered adapter that the manager cannot drive.
 	if hasDetectedClaude(descriptors) {
 		registry.Register(domain.AgentClaude, func() (domain.AgentAdapter, error) {
 			return claude.NewAdapter(claudeManager), nil
@@ -98,6 +100,11 @@ func main() {
 	if hasDetectedCodex(descriptors) {
 		registry.Register(domain.AgentCodex, func() (domain.AgentAdapter, error) {
 			return codex.NewAdapter(codexManager), nil
+		})
+	}
+	if hasDetectedKiro(descriptors) {
+		registry.Register(domain.AgentKiro, func() (domain.AgentAdapter, error) {
+			return kiro.NewAdapter(kiroManager), nil
 		})
 	}
 	if !opencodeDescriptor.Available {
@@ -109,6 +116,7 @@ func main() {
 	serverManager := agents.NewOpenCodeServerManager(opencodeManager)
 	_ = claudeManager // kept alive for the lifetime of the bot; sessions spawn on first use
 	_ = codexManager  // same: spawned per session on first use
+	_ = kiroManager   // same
 
 	if cfg.AutoStart {
 		if err := serverManager.Start(stopContext, domain.AgentOpenCode, cfg.WorkspaceRoot); err != nil {
@@ -198,6 +206,16 @@ func hasDetectedClaude(descriptors []domain.AgentDescriptor) bool {
 func hasDetectedCodex(descriptors []domain.AgentDescriptor) bool {
 	for _, d := range descriptors {
 		if d.Kind == domain.AgentCodex && d.Available {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDetectedKiro mirrors hasDetectedClaude for the kiro adapter.
+func hasDetectedKiro(descriptors []domain.AgentDescriptor) bool {
+	for _, d := range descriptors {
+		if d.Kind == domain.AgentKiro && d.Available {
 			return true
 		}
 	}
