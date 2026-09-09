@@ -25,7 +25,7 @@ func TestDetectorReturnsOneDescriptorPerKind(t *testing.T) {
 	}
 	for _, desc := range got {
 		switch desc.Kind {
-		case domain.AgentOpenCode, domain.AgentClaude:
+		case domain.AgentOpenCode, domain.AgentClaude, domain.AgentCodex:
 			if !desc.Available {
 				t.Errorf("%s should be Available when binary is present", desc.Kind)
 			}

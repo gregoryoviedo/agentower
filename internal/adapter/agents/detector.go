@@ -57,7 +57,7 @@ func (d *Detector) scanOne(ctx context.Context, kind domain.AgentKind) domain.Ag
 	case domain.AgentClaude:
 		return d.scanClaude(ctx)
 	case domain.AgentCodex:
-		return d.scanProbeOnly(ctx, domain.AgentCodex, "codex", DefaultCodexPort, true, true, true, true, true, true, true)
+		return d.scanCodex(ctx)
 	case domain.AgentKiro:
 		return d.scanProbeOnly(ctx, domain.AgentKiro, "kiro", DefaultKiroPort, true, false, false, false, true, false, false)
 	case domain.AgentCopilot:
@@ -140,6 +140,33 @@ func (d *Detector) scanClaude(ctx context.Context) domain.AgentDescriptor {
 		desc.Reason = "no se encontró el binario claude en PATH"
 	}
 	desc.Running = d.detectPortOpen(ctx, DefaultClaudePort, "/") // best-effort HTTP probe
+	return desc
+}
+
+func (d *Detector) scanCodex(ctx context.Context) domain.AgentDescriptor {
+	bin, _ := d.LookPath("codex")
+	desc := domain.AgentDescriptor{
+		Kind:        domain.AgentCodex,
+		DisplayName: "Codex",
+		Bin:         bin,
+		Port:        DefaultCodexPort,
+		Detected:    bin != "",
+		Available:   bin != "",
+		Capabilities: domain.AgentCapabilities{
+			Health:        true,
+			ListProjects:  false,
+			ListSessions:  false, // Codex CLI does not yet expose a session index
+			CreateSession: true,
+			SendPrompt:    true,
+			Revert:        false,
+			FileStatus:    true,
+			ListMessages:  false,
+		},
+	}
+	if bin == "" {
+		desc.Reason = "no se encontró el binario codex en PATH"
+	}
+	desc.Running = d.detectPortOpen(ctx, DefaultCodexPort, "/")
 	return desc
 }
 // binary is not always in PATH; we also look inside the VS Code

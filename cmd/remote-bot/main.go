@@ -14,6 +14,7 @@ import (
 
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/claude"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/codex"
 	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
 	"github.com/gregoryoviedo/agentower/internal/adapter/telegram"
@@ -77,6 +78,7 @@ func main() {
 		Logger: logger.With("component", "opencode-server"),
 	})
 	claudeManager := claude.NewManager("claude", agents.DefaultClaudePort)
+	codexManager := codex.NewManager("codex", agents.DefaultCodexPort)
 
 	registry := agents.NewRegistry(agents.RegistryOptions{
 		Descriptors: descriptors,
@@ -85,12 +87,17 @@ func main() {
 	registry.Register(domain.AgentOpenCode, func() (domain.AgentAdapter, error) {
 		return opencodeClient, nil
 	})
-	// The Claude adapter is wired only when the binary was detected
-	// at boot so users without `claude` installed don't see a
-	// registered adapter that the manager cannot drive.
+	// The Claude and Codex adapters are wired only when the binary
+	// was detected at boot so users without the CLI installed don't
+	// see a registered adapter that the manager cannot drive.
 	if hasDetectedClaude(descriptors) {
 		registry.Register(domain.AgentClaude, func() (domain.AgentAdapter, error) {
 			return claude.NewAdapter(claudeManager), nil
+		})
+	}
+	if hasDetectedCodex(descriptors) {
+		registry.Register(domain.AgentCodex, func() (domain.AgentAdapter, error) {
+			return codex.NewAdapter(codexManager), nil
 		})
 	}
 	if !opencodeDescriptor.Available {
@@ -101,6 +108,7 @@ func main() {
 	}
 	serverManager := agents.NewOpenCodeServerManager(opencodeManager)
 	_ = claudeManager // kept alive for the lifetime of the bot; sessions spawn on first use
+	_ = codexManager  // same: spawned per session on first use
 
 	if cfg.AutoStart {
 		if err := serverManager.Start(stopContext, domain.AgentOpenCode, cfg.WorkspaceRoot); err != nil {
@@ -180,6 +188,16 @@ func main() {
 func hasDetectedClaude(descriptors []domain.AgentDescriptor) bool {
 	for _, d := range descriptors {
 		if d.Kind == domain.AgentClaude && d.Available {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDetectedCodex mirrors hasDetectedClaude for the codex adapter.
+func hasDetectedCodex(descriptors []domain.AgentDescriptor) bool {
+	for _, d := range descriptors {
+		if d.Kind == domain.AgentCodex && d.Available {
 			return true
 		}
 	}
