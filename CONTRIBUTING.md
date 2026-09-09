@@ -34,15 +34,20 @@ El proyecto sigue hexagonal / clean architecture:
 ```text
 internal/
   domain/      entidades y puertos (sin imports externos)
-  usecase/     navegador del workspace, navegación, bot handler
+  usecase/     navegador del workspace, navegación, bot handler, session watcher
   adapter/
     agents/
-      opencode/  cliente REST + manager del subproceso (AgentAdapter para opencode)
-      ...        futuros adapters para claude, codex, kiro, copilot
+      opencode/   cliente REST + manager del subproceso
+      claude/     stdio JSON contra `claude --print --output-format stream-json`
+      codex/      stdio JSON contra `codex exec --json`
+      kiro/       stdio JSON contra `kiro chat --session ...`
+      copilot/    cliente LSP JSON-RPC 2.0 contra `copilot --stdio`
+      detector.go PATH + bundle probing
+      registry.go  AgentRegistry + per-chat active pick
     telegram/  long polling, whitelist, callbacks
-    storage/   repositorio SQLite
+    storage/   repositorio SQLite (runtime_state, agent_state, directory_navigation, completed_session)
     workspace/ adaptador de filesystem
-  config/      cargador de .env
+  config/      cargador de .env (OPENCODE_* legacy + AGENT_<KIND>_*)
 cmd/remote-bot/ composition root
 ```
 
@@ -86,16 +91,37 @@ pequeña y cubrir cada rama en el test.
 1. Añade el método al puerto `AgentAdapter` en
    `internal/domain/ports.go` (sólo si todavía no existe).
 2. Implementa el método en el adapter concreto:
-   `internal/adapter/agents/<kind>/client.go`. Si el endpoint es un
-   stream, usa un cliente HTTP sin timeout; si es una operación
-   normal, usa el cliente con `Timeout`. Para agentes no-HTTP
-   (Claude/Codex/Kiro/Copilot), sigue el patrón de transporte del
-   adapter (stdio JSON-RPC o LSP) y reusa el subproceso gestionado
-   por `internal/adapter/agents/subprocess`.
-3. Cubre con un test usando `httptest.NewServer` o un `fakebin` (mira
-   `internal/adapter/agents/opencode/client_test.go` como referencia).
-4. Conéctalo en el caso del comando o flujo que corresponda en
+   `internal/adapter/agents/<kind>/` (opencode usa HTTP REST + manager;
+   Claude/Codex/Kiro usan stdio JSON; Copilot usa LSP). Si el endpoint
+   es un stream, usa un cliente HTTP sin timeout; si es una operación
+   normal, usa el cliente con `Timeout`.
+3. Marca la capacidad en el `scan<Agent>` del detector
+   (`internal/adapter/agents/detector.go`) para que la UI de Telegram
+   sepa qué botones renderizar.
+4. Cubre con un test usando `httptest.NewServer` o un `fakebin` (mira
+   `internal/adapter/agents/<kind>/client_test.go` como referencia).
+5. Conéctalo en el caso del comando o flujo que corresponda en
    `internal/usecase/bot_handler.go`.
+
+## Añadir un agente nuevo
+
+1. Declara la constante `AgentKind` en
+   `internal/domain/ports.go` y añádela a `AllAgentKinds()`.
+2. Crea `internal/adapter/agents/<kind>/` con `client.go`,
+   `manager.go` y un `testdata/fake<kind>.go` que hable el protocolo
+   que el CLI exponga. Implementa `domain.AgentAdapter` (el compilador
+   te obliga a través del `var _ domain.AgentAdapter = (*Adapter)(nil)`
+   que ponemos en cada adapter).
+3. Añade la capacidad por defecto en `scan<Kind>` dentro del
+   `internal/adapter/agents/detector.go`.
+4. Registra el adapter en `cmd/remote-bot/main.go` detrás de la guarda
+   `hasDetected<Kind>(descriptors)` así un usuario sin el binario no ve
+   un adapter roto.
+5. Añade una entrada para el nuevo kind en `ConfigStore.agentKinds` /
+   `displayName(for:)` en la app nativa para que la sección **Agentes
+   de IA** del Settings la muestre.
+6. Si el agente expone un endpoint HTTP en localhost, documéntalo en
+   `SECURITY.md` para mantener la superficie de ataque al día.
 
 ## Tocar el modelo de seguridad
 

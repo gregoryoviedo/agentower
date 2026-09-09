@@ -14,9 +14,12 @@ descarta silenciosamente, sin error ni eco, en el middleware de
 
 - **Inbound**: únicamente la API de Telegram mediante long polling. El
   binario no abre ningún socket.
-- **Outbound**: únicamente `127.0.0.1:<OPENCODE_PORT>` para hablar con
-  `opencode serve`, y `api.telegram.org` (o el override de
-  `TELEGRAM_API_ROOT`) para el polling.
+- **Outbound**: el agente activo. Por defecto `127.0.0.1:<OPENCODE_PORT>`
+  para hablar con `opencode serve`; en sesiones de Claude/Codex/Kiro
+  el bot abre pipes stdin/stdout contra el binario del usuario; con
+  Copilot habla JSON-RPC sobre stdio con el language server. El polling
+  a Telegram siempre va contra `api.telegram.org` (o el override de
+  `TELEGRAM_API_ROOT`).
 - **Storage**: un único archivo SQLite con estado de runtime; nunca
   credenciales.
 
@@ -26,13 +29,15 @@ descarta silenciosamente, sin error ni eco, en el middleware de
 
 - Navegar recursivamente por `WORKSPACE_ROOT` con un selector de
   carpetas.
-- Crear, listar y seleccionar sesiones de OpenCode del proyecto activo.
+- Elegir entre los agentes detectados (`/agent`) y activar o
+  deshabilitar cada uno (`/agents`).
+- Crear, listar y seleccionar sesiones del agente y proyecto activos.
 - Enviar prompts de texto libre a la sesión activa.
 - Pedir el diff (`/diff`, `/changes`) y revertir (`/undo`) sobre la
-  sesión activa.
-- Arrancar, rearrancar y apagar el subproceso `opencode serve` mediante
-  `/init`, `/projects → Usar esta carpeta` y la variable
-  `OPENCODE_AUTOSTART`.
+  sesión activa cuando el agente lo soporte.
+- Arrancar, rearrancar y apagar el subproceso del agente activo mediante
+  `/init`, `/projects → "Usar esta carpeta"`, `/agent` y la variable
+  `OPENCODE_AUTOSTART` (o `AGENT_<KIND>_AUTOSTART` para los demás).
 
 **No puede**:
 
@@ -113,7 +118,8 @@ Recomendaciones:
    `@userinfobot`).
 4. Has compilado con `go build -o remote-bot ./cmd/remote-bot` desde
    una copia limpia del repo.
-5. El puerto `OPENCODE_PORT` está libre y bindea solo a `127.0.0.1`.
+5. El puerto del agente activo (`OPENCODE_PORT`, `CLAUDE_PORT`, …)
+   está libre y bindea solo a `127.0.0.1`.
 
 Si tocas el código que aplica la invariante de workspace, añade un test
 en `internal/usecase/workspace_browser_test.go` o en

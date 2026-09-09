@@ -7,17 +7,22 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/gregoryoviedo/agentower)](https://github.com/gregoryoviedo/agentower/blob/main/go.mod)
 [![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/gregoryoviedo/agentower/network/dependencies)
 
-Control remoto para una instancia local de `opencode serve` desde Telegram.
+Control remoto desde Telegram para una o varias instancias locales de
+agentes de IA — **opencode, Claude Code, Codex, Kiro y GitHub Copilot**.
 Dos artefactos: un binario Go único (`remote-bot`) que hace el trabajo, y
 opcionalmente una app nativa para macOS (`Agentower.app`) que vive en la
 barra de menús, guarda la configuración y lanza/para el binario por ti.
 
-La idea es permitirte ejecutar, monitorear y guiar sesiones de OpenCode desde
-el teléfono mientras tu MacBook hace el trabajo real, con cero superficie de
-ataque pública más allá de la API de bots de Telegram.
+La idea es permitirte ejecutar, monitorear y guiar sesiones de tu agente
+desde el teléfono mientras tu MacBook hace el trabajo real, con cero
+superficie de ataque pública más allá de la API de bots de Telegram.
 
 ## Características
 
+- **Multi-agente** — un solo bot maneja opencode (HTTP), Claude Code y
+  Codex (stdio JSON), Kiro (stdio JSON, capacidades limitadas) y
+  GitHub Copilot (LSP). Cada chat puede cambiar de agente sobre la
+  marcha desde Telegram.
 - **Long polling a Telegram** — sin puertos expuestos, sin túneles, sin
   webhooks.
 - **Whitelist estricta por usuario** — solo el `ALLOWED_CHAT_ID` configurado
@@ -25,10 +30,12 @@ ataque pública más allá de la API de bots de Telegram.
 - **Navegación limitada al workspace** — selector recursivo de carpetas que
   rechaza salir del workspace raíz, incluso con symlinks o `..`.
 - **Estado persistente en SQLite** — workspace, proyecto activo, sesión
-  activa y estados efímeros de navegación sobreviven a reinicios.
-- **App nativa para macOS (opcional)** — menú-barra con toggle, settings con
-  formulario, auto-start al login y logs accesibles desde Finder. Construye
-  un `.app` ad-hoc firmado con `make app` que embebe el binario Go.
+  activa, agente activo por chat y estados efímeros de navegación
+  sobreviven a reinicios.
+- **App nativa para macOS (opcional)** — menú-barra con toggle, settings
+  con formulario, auto-start al login, sección multi-agente con detección
+  en PATH y logs accesibles desde Finder. Construye un `.app` ad-hoc
+  firmado con `make app` que embebe el binario Go.
 - **Binario único en Go** — sin daemon, sin GUI obligatoria, sin firma.
   Tú lo compilas, lo ejecutas y lo paras con `Ctrl+C`.
 
@@ -37,7 +44,12 @@ ataque pública más allá de la API de bots de Telegram.
 - macOS, Linux o Windows para el binario Go.
 - macOS 13.0+ para la app nativa de menú-barra.
 - Go 1.22 o superior.
-- `opencode` instalado localmente (por ejemplo, `brew install anomalyco/tap/opencode`).
+- Al menos uno de los siguientes agentes instalado localmente:
+  - `opencode` (CLI; instala vía `brew install anomalyco/tap/opencode`)
+  - `claude` (Claude Code CLI)
+  - `codex` (OpenAI Codex CLI)
+  - `kiro` (AWS Kiro CLI; capacidades limitadas)
+  - `copilot` o `copilot-language-server` (GitHub Copilot LSP)
 - Un token de bot de Telegram desde `@BotFather`.
 - Tu ID personal de chat desde `@userinfobot`.
 
@@ -55,10 +67,12 @@ open /Applications/Agentower.app
 ```
 
 Al primer arranque, abrí **Settings…** desde el menú de la barra, completá
-`WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN` y `ALLOWED_CHAT_ID`, y la app
-escribirá un `.env` con permisos `0600` en
-`~/Library/Application Support/Agentower/`. A partir de ahí el toggle del
-popover arranca y detiene el bot.
+`WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN` y `ALLOWED_CHAT_ID`. La sección
+**Agentes de IA** muestra qué CLIs detectó en PATH (botón "Reintentar
+detección" para refrescar) y te permite habilitar opencode, Claude, Codex,
+Kiro o Copilot individualmente. Al guardar, la app escribe un `.env`
+con permisos `0600` en `~/Library/Application Support/Agentower/`. A
+partir de ahí el toggle del popover arranca y detiene el bot.
 
 ### Ejecución del binario sin la app (avanzado)
 
@@ -82,17 +96,55 @@ preferís no usar archivo.
 | `TELEGRAM_BOT_TOKEN` | Token del bot desde `@BotFather`.                      |
 | `ALLOWED_CHAT_ID`    | Tu ID numérico de usuario desde `@userinfobot`.        |
 
-### Variables opcionales
+### Variables opcionales (opencode, heredadas)
 
 | Variable              | Por defecto                                            | Descripción                                                                                              |
 |-----------------------|--------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
 | `OPENCODE_PORT`       | `4096`                                                 | Puerto para `opencode serve` local.                                                                      |
 | `OPENCODE_BIN`        | `opencode`                                             | Binario a lanzar cuando el bot auto-arranca el servidor. Usa ruta absoluta si no está en `PATH`.         |
 | `OPENCODE_AUTOSTART`  | `false`                                                | Si está activo, el bot lanza `opencode serve --port <p>` en `WORKSPACE_ROOT` al iniciarse.               |
+
+### Variables opcionales (multi-agente)
+
+Cada agente tiene su propio slot. El prefijo es `AGENT_<KIND>_` en
+mayúsculas (`AGENT_CLAUDE_`, `AGENT_CODEX_`, `AGENT_KIRO_`,
+`AGENT_COPILOT_`). Las claves disponibles son:
+
+| Clave                      | Por defecto | Descripción                                                                 |
+|----------------------------|-------------|-----------------------------------------------------------------------------|
+| `AGENT_<KIND>_ENABLED`      | `true`      | Habilita este agente para el bot. `false` lo apaga.                          |
+| `AGENT_<KIND>_BIN`          | derivado    | Ruta al binario. Si está vacío se autodetecta vía `PATH` o el bundle de VS Code (Copilot). |
+| `AGENT_<KIND>_PORT`         | derivado    | Puerto loopback (opencode, codex, kiro). Para stdio agents no se usa.        |
+| `AGENT_<KIND>_ARGS`         | _(vacío)_   | Argumentos extra a pasarle al binario (avanzado).                            |
+
+### Otras variables opcionales
+
+| Variable              | Por defecto                                            | Descripción                                                                                              |
+|-----------------------|--------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
 | `AGENTOWER_STATE_PATH`   | `<WORKSPACE_ROOT>/.agentower/state.db`           | Ubicación de la base SQLite.                                                                             |
 | `TELEGRAM_API_ROOT`   | (predeterminado de `telebot.v3`)                        | Override del endpoint de la API de Telegram (útil para mirrors o tests). Se lee del `.env` o del shell. |
 | `TELEGRAM_PROXY_URL`  | _(vacío)_                                               | URL de proxy HTTP para las llamadas a la API de Telegram (formato `http://host:port`).                  |
 | `ENV_FILE`            | `.env` subiendo desde el directorio actual              | Forzar un archivo `.env` específico.                                                                     |
+
+## Multi-agente
+
+El bot puede manejar varios agentes de IA simultáneamente. Cada chat
+de Telegram elige su agente activo en `/projects → Usar esta carpeta`
+o vía el comando `/agent`. Los agentes disponibles son los que el
+detector encuentra en `PATH` (o en el bundle de VS Code para Copilot).
+Cambiar de agente no apaga los demás: Agentower puede mantener
+varios procesos vivos a la vez y cambiar el "activo" en Telegram sin
+rearrancar.
+
+Puertos reservados por agente (cada uno override-able por env):
+
+| Agente    | Puerto por defecto |
+|-----------|--------------------|
+| opencode  | 4096               |
+| claude    | 4097               |
+| codex     | 4098               |
+| kiro      | 4099               |
+| copilot   | 4100               |
 
 ### Auto-arranque del servidor
 
@@ -112,39 +164,44 @@ Sea como sea, el bot siempre apaga el servidor con `SIGTERM` cuando recibe
 
 ## Comandos
 
-| Comando              | Descripción                                             |
-|----------------------|---------------------------------------------------------|
-| `/start` / `/help`   | Bienvenida y lista de comandos.                         |
-| `/status`            | Salud del servidor OpenCode, proyecto activo, sesión.   |
-| `/projects`          | Selector recursivo de carpetas; al confirmar, **(re)arranca** el servidor en la carpeta elegida. |
-| `/init`              | (Re)arranca el servidor OpenCode en la carpeta activa. Acepta una ruta **relativa al workspace** (`/init work/proyecto`). |
-| `/sessions`          | Lista o crea sesiones del proyecto activo. Acepta `new` (crea y activa) o un `id` de sesión para activarla. |
-| `/diff` / `/changes` | Archivos modificados por la sesión activa.              |
-| `/undo`              | Revierte el último cambio.                              |
-| texto libre          | Prompt directo a la sesión activa de OpenCode.          |
+| Comando                | Descripción                                             |
+|------------------------|---------------------------------------------------------|
+| `/start` / `/help`     | Bienvenida y lista de comandos.                         |
+| `/agent`               | Muestra el picker de agentes (opencode, Claude, Codex, Kiro, Copilot). |
+| `/agents`              | Lista los agentes detectados con toggle enable/disable.  |
+| `/agents migrate`      | Marca sesiones heredadas como `opencode` (compatibilidad). |
+| `/status`              | Salud del agente activo y proyecto/sesión activos.       |
+| `/projects`            | Selector recursivo de carpetas; al confirmar, **muestra el picker de agente** y (re)arranca el servidor elegido. |
+| `/init`                | (Re)arranca el agente activo en la carpeta activa. Acepta una ruta **relativa al workspace** (`/init work/proyecto`). |
+| `/sessions`            | Lista o crea sesiones del proyecto y agente activos. Acepta `new` (crea y activa) o un `id` de sesión. |
+| `/diff` / `/changes`   | Archivos modificados por la sesión activa.              |
+| `/undo`                | Revierte el último cambio.                              |
+| texto libre            | Prompt directo a la sesión activa del agente.            |
 
 Los Inline Keyboards manejan el resto: carpetas, "Atrás", "Inicio", "Usar
-esta carpeta", selección de sesión y "Nueva sesión".
+esta carpeta", selección de agente, selección de sesión y "Nueva sesión".
 
-## Modelo de servidor
+## Modelo de agente activo
 
-`opencode serve` está pensado como un servidor **por proyecto**: queda atado
-al directorio desde el que lo arrancas y todas las sesiones que crea heredan
-el `projectID` calculado a partir de esa CWD. El bot opera con un único
-servidor a la vez:
+Cada agente se ata a un directorio desde el que lo arrancas, de manera
+similar al `opencode serve` original. Agentower maneja varios agentes a
+la vez y el bot cambia el "activo" en Telegram sin matar los demás:
 
-- **`/projects` → "Usar esta carpeta"**: el bot mata el servidor actual (si
-  lo hay) y arranca uno nuevo con la carpeta recién seleccionada como CWD.
-- **`/init [ruta]`**: atajo para reiniciar el servidor sin cambiar de
-  carpeta. Si pasas una ruta, se usa como nueva CWD; si no, se reutiliza la
-  carpeta activa.
-- **`OPENCODE_AUTOSTART` (def. `false`)**: si lo activas, el bot arranca el
-  servidor en `WORKSPACE_ROOT` al iniciarse; necesitarás seguir usando
-  `/projects` o `/init` para cambiar la carpeta activa.
+- **`/projects` → "Usar esta carpeta"**: el bot muestra el picker de agente
+  y, una vez elegido, (re)arranca el agente seleccionado con la carpeta
+  recién seleccionada como CWD.
+- **`/agent`**: cambia el agente activo del chat en cualquier momento, sin
+  tocar la carpeta ni los procesos de los demás agentes.
+- **`/init [ruta]`**: atajo para rearrancar el agente activo sin cambiar de
+  agente. Si pasas una ruta, se usa como nueva CWD; si no, se reutiliza
+  la carpeta activa.
+- **`OPENCODE_AUTOSTART` (def. `false`)**: si lo activas, el bot arranca
+  opencode en `WORKSPACE_ROOT` al iniciarse; el resto de los agentes
+  quedan a la espera de un `/agent` que los active.
 
-> Si el servidor está apagado, cualquier comando (`/status`, `/sessions`,
-> `/diff`, `/undo`, texto libre) devuelve un mensaje pidiéndote ejecutar
-> `/init`.
+> Si el agente activo está apagado, cualquier comando (`/status`,
+> `/sessions`, `/diff`, `/undo`, texto libre) devuelve un mensaje pidiéndote
+> ejecutar `/init`.
 
 ## App nativa de macOS
 
@@ -188,9 +245,12 @@ Aparece un icono en la barra de menús. **Click izquierdo** abre el popover
 con un toggle. **Click derecho** abre menú contextual.
 
 **Primera vez**: el toggle está deshabilitado. Click en **Settings…**, llena
-`WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN`, `ALLOWED_CHAT_ID`. Al guardar, la app
-escribe `~/Library/Application Support/Agentower/.env` con permisos
-`0600` y a partir de ahí el toggle funciona.
+`WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN`, `ALLOWED_CHAT_ID`. La sección
+**Agentes de IA** muestra qué CLIs detectó en PATH (botón "Reintentar
+detección" para refrescar) y te permite habilitar opencode, Claude, Codex,
+Kiro o Copilot individualmente. Al guardar, la app escribe
+`~/Library/Application Support/Agentower/.env` con permisos `0600` y a
+partir de ahí el toggle funciona.
 
 ### Auto-inicio al login
 

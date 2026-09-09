@@ -11,17 +11,22 @@ architectural decisions and trade-offs that shaped the code.
 - Single Go binary as the system of record. The Swift macOS wrapper is an
   optional launcher UI; the bot can run headless from a terminal.
 - Strict layering: pure domain, swappable adapters, easy testing.
+- Multi-agent: one Telegram chat at a time can drive any of the bundled
+  adapters (opencode HTTP, Claude/Codex/Kiro stdio JSON, GitHub Copilot
+  LSP). Each agent has its own slot in the AgentServerManager.
 - Strict security by default: workspace-bounded, single-user, no public
   ports.
-- Small surface area: only Telegram long polling and `opencode serve` on
-  localhost.
+- Small surface area: only Telegram long polling plus loopback to the
+  chosen agent's daemon (or stdin/stdout for stdio-based agents).
 
 ### Non-goals
 
 - Multi-user access.
 - Multi-chat concurrent flows.
 - Multimedia inputs (voice, documents, images).
-- Hosting `opencode serve` from inside the bot.
+- Hosting agent subprocesses from inside the bot for non-loopback
+  transports (they are always reachable on localhost or via the
+  user's own CLI).
 - Universal macOS binary (arm64-only for now).
 - i18n of user-facing strings.
 
@@ -33,14 +38,14 @@ rings, dependency arrows pointing inward only.
 ```text
         ┌───────────────────────────────┐
         │          adapters             │
-        │  telegram · opencode · sqlite │
+        │  telegram · agents/* · sqlite │
         │  workspace · config (.env)    │
         └───────────────┬───────────────┘
                         │ implements
-        �───────────────▼───────────────┐
+        ────────────────▼───────────────┐
         │           usecase             │
         │  browser · navigation ·       │
-        │  handler                      │
+        │  handler · session_watcher     │
         └───────────────┬───────────────┘
                         │ uses
         ┌───────────────▼───────────────┐
@@ -54,14 +59,20 @@ rings, dependency arrows pointing inward only.
 
 Pure data and interfaces.
 
-- Entities: `Project`, `Session`, `RuntimeState`, `NavigationState`,
-  `DirectoryEntry`, `HealthStatus`, `FileChange`, `BotButton`,
-  `BotResponse`.
+- Entities: `AgentKind`, `AgentCapabilities`, `AgentDescriptor`,
+  `Project`, `Session`, `RuntimeState`, `AgentState`, `NavigationState`,
+  `DirectoryEntry`, `HealthStatus`, `FileChange`, `Message`,
+  `CompletedSession`, `Snapshot`, `BotButton`, `BotResponse`.
 - Ports: `WorkspaceFS`, `StateRepository`, `NavigationRepository`,
-  `OpenCodeClient`, `BotHandler`, `OpenCodeServerManager`.
+  `AgentAdapter`, `AgentRegistry`, `AgentServerManager`, `BotHandler`,
+  `SnapshotPublisher`, `CompletionPublisher`, `SessionEventLog`,
+  `ChatNotifier`. The legacy `OpenCodeClient` and `OpenCodeServerManager`
+  remain as deprecated aliases.
 - Errors: `ErrOutsideWorkspace`, `ErrNotDirectory`, `ErrNavigationNotFound`,
   `ErrUnauthorizedNavigation`, `ErrServerNotRunning`, `ErrSessionRequired`,
-  `ErrProjectRequired`, `ErrWorkspaceNotConfigured`.
+  `ErrProjectRequired`, `ErrWorkspaceNotConfigured`, `ErrNoActiveAgent`,
+  `ErrAgentUnavailable`, `ErrAgentCapabilitiesLimited`,
+  `ErrUnknownAgentKind`, `ErrMigrationNotNeeded`.
 
 The domain package imports nothing from the rest of the project and nothing
 external besides the standard library. This is what keeps every test fast
@@ -75,33 +86,66 @@ Use cases — the rules of the product.
   "must stay inside the root" invariant.
 - `NavigationService`: short-lived per-chat navigation records with
   expiration; only the owning chat can drive the buttons.
-- `Handler`: command router. Pure dispatch — no knowledge of Telegram
-  specifics; only `BotResponse` values come back. Returns
-  `domain.Err*` sentinels for every recoverable failure so the adapter
-  layer can map them to user-facing replies.
+- `Handler`: command router. Resolves the active agent via the
+  `AgentRegistry` and dispatches via the corresponding `AgentAdapter`.
+  After `/projects → Usar esta carpeta` the handler shows the agent
+  picker instead of starting the agent immediately so the user can
+  switch agents at the same time. `/agent` shows the picker again, and
+  `/agents` lists every known agent with an enable/disable toggle plus
+  `/agents migrate` for legacy session migration. Pure dispatch —
+  no knowledge of Telegram specifics; only `BotResponse` values come
+  back. Returns `domain.Err*` sentinels for every recoverable failure
+  so the adapter layer can map them to user-facing replies.
+- `SessionWatcher`: polls the active agent and records completion
+  snapshots so the macOS wrapper can fire its idle-notification flow.
+  Each agent has its own capabilities; capabilities-limited adapters
+  return `ErrAgentCapabilitiesLimited` for actions the watcher cannot
+  exercise.
 
 ### `internal/adapter`
 
 Adapters that implement the ports and depend on real-world libraries.
 
-- `adapter/opencode`: HTTP client for `http://127.0.0.1:<port>`, plus a
-  subprocess manager that starts, probes, and kills `opencode serve` with
-  a graceful SIGTERM → SIGKILL shutdown. JSON responses are capped at
-  32 MB via `io.LimitReader`.
+- `adapter/agents/opencode`: HTTP client for `http://127.0.0.1:<port>`,
+  plus a subprocess manager that starts, probes, and kills
+  `opencode serve` with a graceful SIGTERM → SIGKILL shutdown. JSON
+  responses are capped at 32 MB via `io.LimitReader`.
+- `adapter/agents/claude`: stdio JSON transport over
+  `claude --print --output-format stream-json --verbose --session-id
+  <uuid> --cwd <dir>`. Sessions are spawned lazily on first prompt;
+  the manager reaps the subprocess once the trailing `result` event
+  lands.
+- `adapter/agents/codex`: same shape as Claude over
+  `codex exec --json --cd <dir>`. Revert / ListMessages are no-ops
+  (Codex CLI does not yet expose them) so the bot hides those
+  buttons.
+- `adapter/agents/kiro`: minimal adapter — only SendPrompt +
+  Health; everything else returns `ErrAgentCapabilitiesLimited` because
+  Kiro's CLI surface is still poorly documented.
+- `adapter/agents/copilot`: real LSP client (Content-Length framed
+  JSON-RPC 2.0). Spawns the modern `copilot` CLI when present, or a
+  VS Code extension bundle via `node`. SendPrompt writes the prompt as
+  a synthetic text document and requests an inline completion.
+- `adapter/agents/detector`: PATH + bundle probing for every supported
+  agent; emits the boot-time `AgentDescriptor` list the registry
+  consumes.
+- `adapter/agents/registry`: per-chat active pick, lazy adapter
+  construction, and the `Available` filter the Telegram picker uses.
 - `adapter/telegram`: telebot.v3 long polling, whitelist middleware,
   commands, `OnText`, and a single inline-button endpoint that decodes
   `kind|id|payload` callback data. Includes a hand-rolled Markdown →
   Telegram HTML converter with placeholder substitution to keep escaping
   idempotent.
 - `adapter/storage/sqlite`: SQLite repository with WAL mode, single
-  connection to avoid locking. Holds `runtime_state` and
-  `directory_navigation`.
+  connection to avoid locking. Holds `runtime_state`
+  (now with an `agent_kind` column), `directory_navigation`,
+  `completed_session`, and `agent_state`.
 - `adapter/workspace`: thin wrapper around the standard `os` filesystem
   helpers, exposed as a `WorkspaceFS` port to keep tests hermetic.
 - `config`: `.env` loader (godotenv.Overload), parent-directory walk,
-  `ENV_FILE` override. Parses both `TELEGRAM_API_ROOT` and
-  `TELEGRAM_PROXY_URL` from the environment so the Swift wrapper can pass
-  them as real `proc.environment` values instead of relying on the `.env`
+  `ENV_FILE` override. Reads `OPENCODE_*` (legacy) plus
+  `AGENT_<KIND>_*` so the Swift wrapper can pass them as real
+  `proc.environment` values instead of relying on the `.env`
   round-trip.
 
 ### `cmd/remote-bot/main.go`
@@ -134,10 +178,10 @@ file. Files of note:
 ## Trust boundaries
 
 ```text
-┌─────────────┐  long polling  �─────────────┐  REST  ┌────────────┐
-│  Telegram   │ ─────────────► │  remote-bot │ ─────► │ opencode   │
-│   user      │ ◄───────────── │   (Go)      │ ◄───── │   serve    │
-└─────────────┘   callbacks    └──────┬──────┘        └────────────�
+┌─────────────┐  long polling  ─────────────┐  HTTP / JSON-RPC / LSP  ┌────────────┐
+│  Telegram   │ ────────────►│  remote-bot │ ─────────────────────► │  agent     │
+│   user      │ ◄──────────── │   (Go)      │ ◄───────────────────── │  (varies)  │
+└─────────────┘   callbacks    └──────┬──────┘                         └────────────┘
                                       │
                                       ▼
                                  ┌──────────┐
@@ -148,12 +192,14 @@ file. Files of note:
 
 ┌──────────────────────────────┐  Process.spawn  ┌────────────────────┐
 │ Agentower.app (Swift)   │ ───────────────►│ remote-bot binary  │
-│  NSStatusItem + SwiftUI form │ .env + env vars │  (the same code)   │
+│  NSStatusItem + SwiftUI form │ .env + env vars │  the same code   │
 └──────────────────────────────┘                 └────────────────────┘
 ```
 
 - **Inbound (Go bot)**: only `api.telegram.org`. No listening sockets.
-- **Outbound (Go bot)**: only `127.0.0.1:<OPENCODE_PORT>`.
+- **Outbound (Go bot)**: loopback only — `127.0.0.1:<OPENCODE_PORT>` for
+  opencode, or stdin/stdout pipes for Claude / Codex / Kiro, or a
+  loopback JSON-RPC stream for the GitHub Copilot LSP.
 - **Storage**: a single SQLite file with the runtime state.
 - **Storage (macOS wrapper)**: `UserDefaults` for Settings, a `0600`
   `.env` for the bot, and the bot's own SQLite file at
