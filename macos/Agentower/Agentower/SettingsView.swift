@@ -238,12 +238,12 @@ struct SettingsView: View {
 
     private func handlePaste(into field: Field, providers: [NSItemProvider]) {
         if let provider = providers.first {
-            provider.loadObject(ofClass: NSString.self) { [weak self] obj, _ in
+            provider.loadObject(ofClass: NSString.self) { obj, _ in
                 let resolved = (obj as? NSString) as String?
                     ?? NSPasteboard.general.string(forType: .string)
                     ?? ""
-                guard !resolved.isEmpty, let self = self else { return }
-                DispatchQueue.main.async {
+                guard !resolved.isEmpty else { return }
+                DispatchQueue.main.async { [field] in
                     self.applyPaste(resolved, to: field)
                 }
             }
@@ -251,6 +251,18 @@ struct SettingsView: View {
         }
         if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
             applyPaste(text, to: field)
+        }
+    }
+
+    private func pickWorkspace() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Elegir"
+        panel.message = "Elige la carpeta raíz del workspace"
+        if panel.runModal() == .OK, let url = panel.url {
+            workspaceRoot = url.path
         }
     }
 
