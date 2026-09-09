@@ -136,11 +136,6 @@ func (c *Client) DisplayName() string { return "opencode" }
 // multi-agent port. The registry will pick it up via this assertion.
 var _ domain.AgentAdapter = (*Client)(nil)
 
-// legacyClient is preserved so existing callers that depend on the
-// opencode-only methods can keep using them. It is just a type alias
-// kept around during the migration; commit 4 removes it.
-type legacyClient = Client
-
 func (c *Client) Health(ctx context.Context) (domain.HealthStatus, error) {
 	var response struct {
 		Healthy bool   `json:"healthy"`

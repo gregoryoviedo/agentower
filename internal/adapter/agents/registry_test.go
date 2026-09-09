@@ -73,8 +73,8 @@ func TestRegistrySetActiveIsIdempotent(t *testing.T) {
 // for any call but proves the registry dispatches and caches correctly.
 type stubAdapter struct{ kind domain.AgentKind }
 
-func (s stubAdapter) Kind() domain.AgentKind   { return s.kind }
-func (s stubAdapter) DisplayName() string      { return string(s.kind) }
+func (s stubAdapter) Kind() domain.AgentKind { return s.kind }
+func (s stubAdapter) DisplayName() string    { return string(s.kind) }
 func (s stubAdapter) Health(context.Context) (domain.HealthStatus, error) {
 	return domain.HealthStatus{Healthy: true}, nil
 }
@@ -90,7 +90,7 @@ func (s stubAdapter) CreateSession(context.Context, string) (domain.Session, err
 func (s stubAdapter) SendPrompt(context.Context, string, string) (string, error) {
 	return "", nil
 }
-func (s stubAdapter) Revert(context.Context, string) error              { return nil }
+func (s stubAdapter) Revert(context.Context, string) error { return nil }
 func (s stubAdapter) FileStatus(context.Context, string) ([]domain.FileChange, error) {
 	return nil, nil
 }

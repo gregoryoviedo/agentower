@@ -60,7 +60,8 @@ func (d *Detector) scanOne(ctx context.Context, kind domain.AgentKind) domain.Ag
 	case domain.AgentKiro:
 		return d.scanKiro(ctx)
 	case domain.AgentCopilot:
-		return d.scanCopilot(ctx)
+		// Copilot ships an LSP over stdio; no HTTP probe needed.
+		return d.scanCopilot()
 	default:
 		return domain.AgentDescriptor{
 			Kind:        kind,
@@ -168,9 +169,10 @@ func (d *Detector) scanKiro(ctx context.Context) domain.AgentDescriptor {
 	desc.Running = d.detectPortOpen(ctx, DefaultKiroPort, "/")
 	return desc
 }
+
 // binary is not always in PATH; we also look inside the VS Code
 // extension bundles for github.copilot and github.copilot-chat.
-func (d *Detector) scanCopilot(ctx context.Context) domain.AgentDescriptor {
+func (d *Detector) scanCopilot() domain.AgentDescriptor {
 	bin, _ := d.LookPath("copilot")
 	if bin == "" {
 		bin, _ = d.LookPath("copilot-language-server")

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
+	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 )
 
 func newDiscardLogger() *slog.Logger {

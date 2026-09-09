@@ -78,7 +78,7 @@ func (h *Handler) StateForTest() domain.StateRepository { return h.state }
 // activeAdapter resolves the agent currently driving the chat. Falls
 // back to the first available agent if the chat has never picked one
 // so handlers can keep working right after the multi-agent migration.
-func (h *Handler) activeAdapter(ctx context.Context, chatID int64) (domain.AgentAdapter, domain.AgentKind, error) {
+func (h *Handler) activeAdapter(chatID int64) (domain.AgentAdapter, domain.AgentKind, error) {
 	kind, err := h.registry.Active(chatID)
 	if err != nil {
 		return nil, "", err
@@ -145,7 +145,7 @@ func helpResponse() domain.BotResponse {
 const telegramMaxMessageLen = 4096
 
 func (h *Handler) HandleText(ctx context.Context, chatID int64, text string) (domain.BotResponse, error) {
-	adapter, kind, err := h.activeAdapter(ctx, chatID)
+	adapter, kind, err := h.activeAdapter(chatID)
 	if err != nil {
 		return agentUnavailableResponse(err), nil
 	}
@@ -319,7 +319,7 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 		if err != nil || parsed != chatID {
 			return expiredNavigation(), nil
 		}
-		adapter, kind, err := h.activeAdapter(ctx, chatID)
+		adapter, kind, err := h.activeAdapter(chatID)
 		if err != nil {
 			return agentUnavailableResponse(err), nil
 		}
@@ -438,21 +438,6 @@ func (h *Handler) resolveInitTarget(ctx context.Context, override string) (strin
 	return "", domain.ErrWorkspaceNotConfigured
 }
 
-func (h *Handler) bindServer(ctx context.Context, absolutePath string) (domain.BotResponse, error) {
-	kind, err := h.registry.Active(0)
-	if err != nil || kind == "" {
-		kind = domain.AgentOpenCode
-	}
-	if err := h.manager.Start(ctx, kind, absolutePath); err != nil {
-		return domain.BotResponse{Text: "Carpeta guardada, pero no se pudo rearrancar el agente: " + err.Error(), Edit: true}, nil
-	}
-	return domain.BotResponse{
-		Text: fmt.Sprintf("Proyecto activo:\n`%s`\n\nAgente `%s` reiniciado. Usa /sessions para abrir o crear una sesión.",
-			filepath.Base(absolutePath), kind),
-		Edit: true,
-	}, nil
-}
-
 func relativeUnderWorkspace(workspaceRoot, absolutePath string) string {
 	rel, err := filepath.Rel(workspaceRoot, filepath.Clean(absolutePath))
 	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
@@ -497,7 +482,7 @@ func (h *Handler) status(ctx context.Context, chatID int64) (domain.BotResponse,
 }
 
 func (h *Handler) sessions(ctx context.Context, chatID int64, args []string) (domain.BotResponse, error) {
-	adapter, kind, err := h.activeAdapter(ctx, chatID)
+	adapter, kind, err := h.activeAdapter(chatID)
 	if err != nil {
 		return agentUnavailableResponse(err), nil
 	}
@@ -580,7 +565,7 @@ func orDefault(value, fallback string) string {
 }
 
 func (h *Handler) diff(ctx context.Context, chatID int64) (domain.BotResponse, error) {
-	adapter, kind, err := h.activeAdapter(ctx, chatID)
+	adapter, kind, err := h.activeAdapter(chatID)
 	if err != nil {
 		return agentUnavailableResponse(err), nil
 	}
@@ -612,7 +597,7 @@ func (h *Handler) diffForCompleted(ctx context.Context, chatID int64) (domain.Bo
 	if !ok || snapshot.SessionID == "" {
 		return domain.BotResponse{Text: "Aún no registramos ninguna tarea completada."}, nil
 	}
-	adapter, kind, err := h.activeAdapter(ctx, chatID)
+	adapter, kind, err := h.activeAdapter(chatID)
 	if err != nil {
 		return agentUnavailableResponse(err), nil
 	}
@@ -641,7 +626,7 @@ func (h *Handler) diffSession(ctx context.Context, adapter domain.AgentAdapter, 
 }
 
 func (h *Handler) undo(ctx context.Context, chatID int64) (domain.BotResponse, error) {
-	adapter, kind, err := h.activeAdapter(ctx, chatID)
+	adapter, kind, err := h.activeAdapter(chatID)
 	if err != nil {
 		return agentUnavailableResponse(err), nil
 	}
@@ -701,7 +686,7 @@ func (h *Handler) watch(ctx context.Context, chatID int64, args []string) (domai
 	if h.watcher == nil {
 		return domain.BotResponse{Text: "El observador de sesiones no está activo."}, nil
 	}
-	_, kind, err := h.activeAdapter(ctx, chatID)
+	_, kind, err := h.activeAdapter(chatID)
 	if err != nil {
 		return agentUnavailableResponse(err), nil
 	}
@@ -774,7 +759,7 @@ func (h *Handler) listAgentsResponse(ctx context.Context, chatID int64) domain.B
 		if enabled[d.Kind] {
 			flag = "✓"
 		}
-		text.WriteString(fmt.Sprintf("\n%s %s — %s [%s]%s\n", emoji, d.DisplayName, status, flag, marker))
+		fmt.Fprintf(&text, "\n%s %s — %s [%s]%s\n", emoji, d.DisplayName, status, flag, marker)
 		if d.Reason != "" && !d.Available {
 			text.WriteString("   " + d.Reason + "\n")
 		}
@@ -814,10 +799,9 @@ func (h *Handler) toggleAgent(ctx context.Context, chatID int64, kind domain.Age
 	if err := h.state.SaveAgentState(ctx, chatID, kind, state.Enabled[kind]); err != nil {
 		return domain.BotResponse{}, err
 	}
-	if !state.Enabled[kind] && kind == activeKind(h.registry, chatID) {
-		// Disabling the active agent is allowed; the next /status or
-		// /agent will offer the next available one.
-	}
+	// Disabling the active agent is allowed: the next /status or
+	// /agent will offer the next available one. No state change is
+	// required here, but a comment keeps the intent visible.
 	resp := h.listAgentsResponse(ctx, chatID)
 	resp.Edit = true
 	return resp, nil
@@ -899,7 +883,7 @@ func (h *Handler) confirmMigrate(ctx context.Context, chatID int64) (domain.BotR
 	}
 	return domain.BotResponse{
 		Text: fmt.Sprintf("Listo: %d sesión/es marcadas como opencode.", count),
-		Edit:  true,
+		Edit: true,
 	}, nil
 }
 
@@ -971,11 +955,6 @@ func toggleEmoji(enabled bool) string {
 		return "✓"
 	}
 	return "✗"
-}
-
-func activeKind(reg domain.AgentRegistry, chatID int64) domain.AgentKind {
-	kind, _ := reg.Active(chatID)
-	return kind
 }
 
 func expiredNavigation() domain.BotResponse {

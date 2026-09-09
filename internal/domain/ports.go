@@ -68,9 +68,9 @@ type AgentDescriptor struct {
 	DisplayName  string
 	Bin          string
 	Port         int
-	Detected     bool   // the binary is reachable in PATH or the configured bundle path
-	Running      bool   // the agent's local server (if any) is already up
-	Available    bool   // the adapter is implemented and the binary handshake succeeded
+	Detected     bool // the binary is reachable in PATH or the configured bundle path
+	Running      bool // the agent's local server (if any) is already up
+	Available    bool // the adapter is implemented and the binary handshake succeeded
 	Capabilities AgentCapabilities
 	Reason       string // human-readable explanation when Available=false
 }

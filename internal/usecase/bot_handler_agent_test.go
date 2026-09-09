@@ -148,8 +148,8 @@ func (stub) DisplayName() string    { return "opencode" }
 func (stub) Health(context.Context) (domain.HealthStatus, error) {
 	return domain.HealthStatus{Healthy: true}, nil
 }
-func (stub) ListProjects(context.Context) ([]domain.Project, error)   { return nil, nil }
-func (stub) ListSessions(context.Context) ([]domain.Session, error)   { return nil, nil }
+func (stub) ListProjects(context.Context) ([]domain.Project, error) { return nil, nil }
+func (stub) ListSessions(context.Context) ([]domain.Session, error) { return nil, nil }
 func (stub) CreateSession(context.Context, string) (domain.Session, error) {
 	return domain.Session{}, nil
 }

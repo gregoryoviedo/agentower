@@ -101,16 +101,3 @@ func TestAdapterRevertReturnsCapabilitiesLimited(t *testing.T) {
 		t.Fatalf("Revert error = %v, expected ErrAgentCapabilitiesLimited", err)
 	}
 }
-
-// readSource and writeSource are tiny helpers so the test file can
-// embed the fakeclaude.go source without depending on the embedding
-// tooling.
-func readSource(t *testing.T, path string) ([]byte, error) {
-	t.Helper()
-	return os.ReadFile(path)
-}
-
-func writeSource(t *testing.T, path string, body []byte) error {
-	t.Helper()
-	return os.WriteFile(path, body, 0o600)
-}

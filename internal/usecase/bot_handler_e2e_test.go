@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
+	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
 	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/domain"
@@ -35,7 +35,7 @@ func (f *fakeServer) StartedSubprocess(_ domain.AgentKind) bool {
 	return f.started
 }
 func (f *fakeServer) OwnsSubprocess(_ domain.AgentKind) bool { return f.started }
-func (f *fakeServer) WorkingDir(_ domain.AgentKind) string  { return f.cwd }
+func (f *fakeServer) WorkingDir(_ domain.AgentKind) string   { return f.cwd }
 
 // fakeRegistry wraps an opencode client as the single Available agent.
 type fakeRegistry struct{ client domain.AgentAdapter }

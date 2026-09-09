@@ -25,8 +25,8 @@ func (r *recordingServer) Start(_ context.Context, _ domain.AgentKind, workingDi
 	r.startedAt = append(r.startedAt, workingDir)
 	return nil
 }
-func (r *recordingServer) Stop(_ domain.AgentKind)    { r.started = false }
-func (r *recordingServer) StopAll()                   { r.started = false }
+func (r *recordingServer) Stop(_ domain.AgentKind) { r.started = false }
+func (r *recordingServer) StopAll()                { r.started = false }
 func (r *recordingServer) StartedSubprocess(_ domain.AgentKind) bool {
 	return r.started
 }
@@ -73,14 +73,16 @@ func newInitFixture(t *testing.T, layout []string) (string, *usecase.Handler, *r
 // the agent flow (only the server-manager wiring).
 type nilRegistry struct{}
 
-func (nilRegistry) Descriptors() []domain.AgentDescriptor             { return nil }
-func (nilRegistry) Available() []domain.AgentDescriptor               { return nil }
+func (nilRegistry) Descriptors() []domain.AgentDescriptor { return nil }
+func (nilRegistry) Available() []domain.AgentDescriptor   { return nil }
 func (nilRegistry) DescriptorFor(domain.AgentKind) (domain.AgentDescriptor, bool) {
 	return domain.AgentDescriptor{}, false
 }
-func (nilRegistry) Get(domain.AgentKind) (domain.AgentAdapter, error) { return nil, domain.ErrNoActiveAgent }
-func (nilRegistry) Active(int64) (domain.AgentKind, error)            { return "", nil }
-func (nilRegistry) SetActive(int64, domain.AgentKind) error           { return nil }
+func (nilRegistry) Get(domain.AgentKind) (domain.AgentAdapter, error) {
+	return nil, domain.ErrNoActiveAgent
+}
+func (nilRegistry) Active(int64) (domain.AgentKind, error)  { return "", nil }
+func (nilRegistry) SetActive(int64, domain.AgentKind) error { return nil }
 
 func TestInitWithRelativePathStartsServerInsideWorkspace(t *testing.T) {
 	root, handler, server := newInitFixture(t, []string{"work", "work/sub"})

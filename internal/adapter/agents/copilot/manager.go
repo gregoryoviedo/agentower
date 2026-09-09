@@ -44,9 +44,8 @@ type Manager struct {
 }
 
 type conn struct {
-	cmd  *exec.Cmd
-	cl   *client
-	once sync.Once
+	cmd *exec.Cmd
+	cl  *client
 }
 
 func NewManager(cfg LaunchConfig) *Manager {

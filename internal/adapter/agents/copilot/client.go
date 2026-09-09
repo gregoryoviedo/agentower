@@ -38,21 +38,21 @@ type client struct {
 	framer *framer
 	writer *writer
 
-	mu       sync.Mutex
-	pending  map[int64]chan jsonRPCResponse
-	nextID   int64
-	closed   atomic.Bool
-	readErr  chan error
+	mu         sync.Mutex
+	pending    map[int64]chan jsonRPCResponse
+	nextID     int64
+	closed     atomic.Bool
+	readErr    chan error
 	serverCaps map[string]any
 }
 
 func newClient(rd io.Reader, wr io.Writer) *client {
 	return &client{
-		framer:    newFramer(rd),
-		writer:    newWriter(wr),
-		pending:   map[int64]chan jsonRPCResponse{},
-		nextID:    1,
-		readErr:   make(chan error, 1),
+		framer:     newFramer(rd),
+		writer:     newWriter(wr),
+		pending:    map[int64]chan jsonRPCResponse{},
+		nextID:     1,
+		readErr:    make(chan error, 1),
 		serverCaps: map[string]any{},
 	}
 }
@@ -144,7 +144,7 @@ func (c *client) initialize(ctx context.Context) error {
 		"processId": nil,
 		"rootUri":   nil,
 		"capabilities": map[string]any{
-			"workspace":     map[string]any{"workspaceFolders": []any{}},
+			"workspace":    map[string]any{"workspaceFolders": []any{}},
 			"textDocument": map[string]any{"synchronization": map[string]any{"didSave": true}},
 		},
 		"initializationOptions": map[string]any{},

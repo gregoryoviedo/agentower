@@ -17,19 +17,25 @@ func itoa(i int) string { return strconv.Itoa(i) }
 // userHomeDir is overridable in tests; defaults to os.UserHomeDir.
 var userHomeDir = os.UserHomeDir
 
-// firstDirWithPrefix scans parent for directories whose name starts with
-// prefix and returns the lexicographically last match (VS Code extension
-// folders include the version in their name, so this picks the newest
-// installed version).
+// firstDirWithPrefix scans the directory part of `parent` for entries
+// whose name starts with the trailing component of `parent` and
+// returns the lexicographically last match. VS Code extension folders
+// include the version in their name (e.g. github.copilot-1.234.5), so
+// the lexicographic comparison picks the newest installed version.
 func firstDirWithPrefix(parent string) (string, bool) {
-	entries, err := os.ReadDir(parent)
+	dir, namePrefix := filepath.Split(parent)
+	dir = strings.TrimRight(dir, string(filepath.Separator))
+	if dir == "" {
+		return "", false
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", false
 	}
 	var matches []string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), filepath.Base(prefix(parent))) {
-			matches = append(matches, filepath.Join(parent, e.Name()))
+		if e.IsDir() && strings.HasPrefix(e.Name(), namePrefix) {
+			matches = append(matches, filepath.Join(dir, e.Name()))
 		}
 	}
 	if len(matches) == 0 {
@@ -37,17 +43,6 @@ func firstDirWithPrefix(parent string) (string, bool) {
 	}
 	sort.Strings(matches)
 	return matches[len(matches)-1], true
-}
-
-// prefix returns the parent directory plus everything before the final
-// path separator. Used by firstDirWithPrefix to separate the "directory
-// to scan" from the "name prefix to match".
-func prefix(path string) string {
-	dir, file := filepath.Split(path)
-	if dir == "" {
-		return file
-	}
-	return strings.TrimRight(dir, string(filepath.Separator)) + "/" + file
 }
 
 // probeHTTP returns true if the URL responds with 2xx within 1 second.

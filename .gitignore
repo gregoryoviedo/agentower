@@ -13,7 +13,7 @@ dist/
 # State and logs
 .agentower/
 .agentower.pid
-remote-bot
+/remote-bot
 *.db
 *.db-journal
 *.db-shm

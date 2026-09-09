@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
+	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
 	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/domain"
@@ -46,13 +46,13 @@ func (f *localFakeServer) Start(_ context.Context, _ domain.AgentKind, workingDi
 	f.cwd = workingDir
 	return nil
 }
-func (f *localFakeServer) Stop(_ domain.AgentKind)    { f.started = false; f.cwd = "" }
-func (f *localFakeServer) StopAll()                   { f.started = false; f.cwd = "" }
+func (f *localFakeServer) Stop(_ domain.AgentKind) { f.started = false; f.cwd = "" }
+func (f *localFakeServer) StopAll()                { f.started = false; f.cwd = "" }
 func (f *localFakeServer) StartedSubprocess(_ domain.AgentKind) bool {
 	return f.started
 }
 func (f *localFakeServer) OwnsSubprocess(_ domain.AgentKind) bool { return f.started }
-func (f *localFakeServer) WorkingDir(_ domain.AgentKind) string  { return f.cwd }
+func (f *localFakeServer) WorkingDir(_ domain.AgentKind) string   { return f.cwd }
 
 // localRegistry adapts an opencode client to the multi-agent AgentRegistry
 // for tests that only need a single opencode slot.
@@ -85,7 +85,7 @@ func (r *localRegistry) Get(k domain.AgentKind) (domain.AgentAdapter, error) {
 	}
 	return r.client, nil
 }
-func (r *localRegistry) Active(_ int64) (domain.AgentKind, error)   { return domain.AgentOpenCode, nil }
+func (r *localRegistry) Active(_ int64) (domain.AgentKind, error)    { return domain.AgentOpenCode, nil }
 func (r *localRegistry) SetActive(_ int64, _ domain.AgentKind) error { return nil }
 
 func TestHandleTextEmitsTypingWhilePromptRuns(t *testing.T) {

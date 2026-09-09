@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
+	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
 	"github.com/gregoryoviedo/agentower/internal/domain"
 )

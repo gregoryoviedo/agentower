@@ -44,6 +44,7 @@ type session struct {
 	cwd      string
 	mu       sync.Mutex
 	lastUsed time.Time
+	dead     bool
 }
 
 // NewManager constructs the manager. The caller is expected to have
@@ -172,6 +173,9 @@ func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (strin
 	if err := sess.stdin.Close(); err != nil {
 		return "", fmt.Errorf("close stdin: %w", err)
 	}
+	// Mark the session dead so the next SendPrompt for the same id
+	// respawns the subprocess instead of writing to a closed pipe.
+	sess.dead = true
 
 	scanner := bufio.NewScanner(sess.stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -209,7 +213,12 @@ func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (strin
 	}
 	// The subprocess exits once it has flushed the result event;
 	// reap it so the goroutine and any file descriptors are released.
-	go func() { _ = sess.cmd.Wait() }()
+	go func() {
+		_ = sess.cmd.Wait()
+		sess.mu.Lock()
+		sess.cmd = nil
+		sess.mu.Unlock()
+	}()
 	return reply.String(), nil
 }
 
@@ -222,7 +231,7 @@ func (m *Manager) ensureSession(ctx context.Context, id string) (*session, error
 	m.mu.Lock()
 	sess, ok := m.sessions[id]
 	m.mu.Unlock()
-	if ok && sess != nil && sess.cmd != nil && sess.cmd.Process != nil {
+	if ok && sess != nil && !sess.dead && sess.cmd != nil && sess.cmd.ProcessState == nil && sess.cmd.Process != nil {
 		return sess, nil
 	}
 

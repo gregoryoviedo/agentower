@@ -123,9 +123,9 @@ func main() {
 		logger.Warn("opencode binary not found in PATH", "expected_bin", cfg.OpenCodeBin)
 	}
 	serverManager := agents.NewOpenCodeServerManager(opencodeManager)
-	_ = claudeManager // kept alive for the lifetime of the bot; sessions spawn on first use
-	_ = codexManager  // same: spawned per session on first use
-	_ = kiroManager   // same
+	_ = claudeManager  // kept alive for the lifetime of the bot; sessions spawn on first use
+	_ = codexManager   // same: spawned per session on first use
+	_ = kiroManager    // same
 	_ = copilotManager // same: lazily dials the LSP server on first use
 
 	if cfg.AutoStart {

@@ -50,6 +50,7 @@ type session struct {
 	cwd      string
 	mu       sync.Mutex
 	lastUsed time.Time
+	dead     bool
 }
 
 // NewManager constructs the manager. The caller is expected to have
@@ -157,6 +158,11 @@ func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (strin
 	if err := sess.stdin.Close(); err != nil {
 		return "", fmt.Errorf("close stdin: %w", err)
 	}
+	// Mark the session dead so the next SendPrompt for the same id
+	// respawns the subprocess instead of trying to write to a
+	// closed pipe. The wait goroutine will still clear cmd and
+	// reap the child.
+	sess.dead = true
 
 	scanner := bufio.NewScanner(sess.stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -193,8 +199,15 @@ func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (strin
 		return "", fmt.Errorf("scan codex stdout: %w", err)
 	}
 	// Reap the subprocess so a long-lived session does not leak file
-	// descriptors or goroutines.
-	go func() { _ = sess.cmd.Wait() }()
+	// descriptors or goroutines, and clear the cmd reference so the
+	// next SendPrompt for this session id observes the dead
+	// subprocess and spawns a fresh one.
+	go func() {
+		_ = sess.cmd.Wait()
+		sess.mu.Lock()
+		sess.cmd = nil
+		sess.mu.Unlock()
+	}()
 	return reply.String(), nil
 }
 
@@ -202,11 +215,17 @@ func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (strin
 // The argv uses codex's documented non-interactive JSON mode today;
 // if a future CLI version drops --json the adapter will fail with a
 // clear error and the user can adjust the command via AGENT_CODEX_ARGS.
+//
+// The liveness check uses ProcessState: while the subprocess is
+// running exec.Cmd leaves ProcessState nil; once Wait() returns the
+// field is populated with the exit info. We additionally nil out
+// cmd in the wait goroutine below so a stale struct cannot hand a
+// caller a closed stdin pipe.
 func (m *Manager) ensureSession(ctx context.Context, id string) (*session, error) {
 	m.mu.Lock()
 	sess, ok := m.sessions[id]
 	m.mu.Unlock()
-	if ok && sess != nil && sess.cmd != nil && sess.cmd.Process != nil {
+	if ok && sess != nil && !sess.dead && sess.cmd != nil && sess.cmd.ProcessState == nil && sess.cmd.Process != nil {
 		return sess, nil
 	}
 
