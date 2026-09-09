@@ -182,6 +182,12 @@ final class BotController {
 
     private func openLogFile() throws {
         let url = AppPaths.botLogFile
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) {
+            guard fm.createFile(atPath: url.path, contents: nil, attributes: nil) else {
+                throw NSError(domain: "BotController", code: 1, userInfo: [NSLocalizedDescriptionKey: "No se pudo crear el archivo de log en \(url.path)"])
+            }
+        }
         let handle = try FileHandle(forWritingTo: url)
         try handle.seekToEnd()
         logFileHandle = handle
