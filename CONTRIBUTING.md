@@ -1,6 +1,6 @@
 # Contribuir
 
-Gracias por el interés en OpenCode Remote.
+Gracias por el interés en Agentower.
 
 ## Flujo de trabajo
 
@@ -72,9 +72,8 @@ pequeña y cubrir cada rama en el test.
 1. Declara el campo en `internal/config/config.go` (`Config`).
 2. Léela con `os.Getenv` en `Load()` con un valor por defecto seguro y
    validación (rangos numéricos, booleanos normalizados, etc.).
-3. Documenta la variable en:
+ 3. Documenta la variable en:
    - la tabla "Variables opcionales" de `README.md`,
-   - `.env.example` con un valor comentado,
    - y, si aplica, la lista de "Variables de entorno sensibles" de
      `SECURITY.md`.
 4. Pasa el valor al componente que lo necesite desde

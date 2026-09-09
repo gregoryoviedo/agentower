@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 const navigationTTL = 15 * time.Minute

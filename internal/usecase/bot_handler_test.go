@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 // Telegram rejects callback_data longer than 64 bytes (BUTTON_DATA_INVALID).
@@ -25,10 +25,10 @@ func TestDirectoryResponseFitsTelegramCallbackLimitForRealisticPaths(t *testing.
 		path string
 	}{
 		{"short root entry", "Personal"},
-		{"long root entry", "opencode-telegram-remote"},
+		{"long root entry", "agentower"},
 		{"nested sibling", "Personal/devtools"},
-		{"the user's project", "Personal/opencode-telegram-remote"},
-		{"two-level nested", "Personal/opencode-telegram-remote/cmd"},
+		{"the user's project", "Personal/agentower"},
+		{"two-level nested", "Personal/agentower/cmd"},
 		{"long intermediate", "Personal/Some-Very-Long-Directory-Name"},
 	}
 

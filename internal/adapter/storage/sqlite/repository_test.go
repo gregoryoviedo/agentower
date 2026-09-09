@@ -7,8 +7,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/storage/sqlite"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 func TestRepositoryPersistsRuntimeState(t *testing.T) {

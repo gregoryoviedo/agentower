@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 // SessionWatcher polls OpenCode sessions in the background and decides when

@@ -1,15 +1,15 @@
-# OpenCode Remote
+# Agentower
 
-[![CI](https://github.com/gregoryoviedo/opencode-telegram-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/gregoryoviedo/opencode-telegram-remote/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/gregoryoviedo/opencode-telegram-remote)](https://goreportcard.com/report/github.com/gregoryoviedo/opencode-telegram-remote)
-[![Latest Release](https://img.shields.io/github/v/release/gregoryoviedo/opencode-telegram-remote)](https://github.com/gregoryoviedo/opencode-telegram-remote/releases/latest)
-[![License: MIT](https://img.shields.io/github/license/gregoryoviedo/opencode-telegram-remote)](https://github.com/gregoryoviedo/opencode-telegram-remote/blob/main/LICENSE)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/gregoryoviedo/opencode-telegram-remote)](https://github.com/gregoryoviedo/opencode-telegram-remote/blob/main/go.mod)
-[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/gregoryoviedo/opencode-telegram-remote/network/dependencies)
+[![CI](https://github.com/gregoryoviedo/agentower/actions/workflows/ci.yml/badge.svg)](https://github.com/gregoryoviedo/agentower/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/gregoryoviedo/agentower)](https://goreportcard.com/report/github.com/gregoryoviedo/agentower)
+[![Latest Release](https://img.shields.io/github/v/release/gregoryoviedo/agentower)](https://github.com/gregoryoviedo/agentower/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/gregoryoviedo/agentower)](https://github.com/gregoryoviedo/agentower/blob/main/LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/gregoryoviedo/agentower)](https://github.com/gregoryoviedo/agentower/blob/main/go.mod)
+[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/gregoryoviedo/agentower/network/dependencies)
 
 Control remoto para una instancia local de `opencode serve` desde Telegram.
 Dos artefactos: un binario Go único (`remote-bot`) que hace el trabajo, y
-opcionalmente una app nativa para macOS (`OpenCodeRemote.app`) que vive en la
+opcionalmente una app nativa para macOS (`Agentower.app`) que vive en la
 barra de menús, guarda la configuración y lanza/para el binario por ti.
 
 La idea es permitirte ejecutar, monitorear y guiar sesiones de OpenCode desde
@@ -41,23 +41,38 @@ ataque pública más allá de la API de bots de Telegram.
 - Un token de bot de Telegram desde `@BotFather`.
 - Tu ID personal de chat desde `@userinfobot`.
 
-## Inicio rápido (binario Go)
+## Inicio rápido
+
+Agentower se distribuye como app nativa de macOS que **embebe** el binario
+Go. La forma recomendada de usarlo es construir la app y configurar las
+credenciales desde la UI:
 
 ```bash
-# 1. Compila el binario
-go build -o remote-bot ./cmd/remote-bot
-
-# 2. Crea tu .env
-cp .env.example .env
-$EDITOR .env
-
-# 3. Ejecuta
-./remote-bot
+make app
+cp -R dist/Agentower.app /Applications/
+xattr -dr com.apple.quarantine /Applications/Agentower.app
+open /Applications/Agentower.app
 ```
 
-El bot lee `.env` desde el directorio actual o cualquier directorio padre.
-También puedes apuntar a un archivo específico con `ENV_FILE=/ruta/.env` o
-exportar las variables directamente en tu shell.
+Al primer arranque, abrí **Settings…** desde el menú de la barra, completá
+`WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN` y `ALLOWED_CHAT_ID`, y la app
+escribirá un `.env` con permisos `0600` en
+`~/Library/Application Support/Agentower/`. A partir de ahí el toggle del
+popover arranca y detiene el bot.
+
+### Ejecución del binario sin la app (avanzado)
+
+Si preferís correr el binario Go directamente, podés exportando las
+variables en tu shell o apuntando `ENV_FILE` a un archivo propio:
+
+```bash
+go build -o remote-bot ./cmd/remote-bot
+ENV_FILE=/ruta/a/tu/.env ./remote-bot
+```
+
+El bot resuelve la configuración desde el `.env` (con búsqueda en
+directorios padre) o directamente desde las variables de entorno si
+preferís no usar archivo.
 
 ### Variables obligatorias
 
@@ -74,7 +89,7 @@ exportar las variables directamente en tu shell.
 | `OPENCODE_PORT`       | `4096`                                                 | Puerto para `opencode serve` local.                                                                      |
 | `OPENCODE_BIN`        | `opencode`                                             | Binario a lanzar cuando el bot auto-arranca el servidor. Usa ruta absoluta si no está en `PATH`.         |
 | `OPENCODE_AUTOSTART`  | `false`                                                | Si está activo, el bot lanza `opencode serve --port <p>` en `WORKSPACE_ROOT` al iniciarse.               |
-| `REMOTE_STATE_PATH`   | `<WORKSPACE_ROOT>/.opencode-remote/state.db`           | Ubicación de la base SQLite.                                                                             |
+| `AGENTOWER_STATE_PATH`   | `<WORKSPACE_ROOT>/.agentower/state.db`           | Ubicación de la base SQLite.                                                                             |
 | `TELEGRAM_API_ROOT`   | (predeterminado de `telebot.v3`)                        | Override del endpoint de la API de Telegram (útil para mirrors o tests). Se lee del `.env` o del shell. |
 | `TELEGRAM_PROXY_URL`  | _(vacío)_                                               | URL de proxy HTTP para las llamadas a la API de Telegram (formato `http://host:port`).                  |
 | `ENV_FILE`            | `.env` subiendo desde el directorio actual              | Forzar un archivo `.env` específico.                                                                     |
@@ -89,11 +104,8 @@ arrancas, así que el bot prefiere esperar a que le digas qué proyecto
 quieres antes de gastar un puerto.
 
 Si prefieres el comportamiento antiguo (`/init` implícito en el workspace
-_root_), añade a tu `.env`:
-
-```bash
-OPENCODE_AUTOSTART=true
-```
+_root_), añadí `OPENCODE_AUTOSTART=true` al `.env` que mantiene la app
+macOS en `~/Library/Application Support/Agentower/`.
 
 Sea como sea, el bot siempre apaga el servidor con `SIGTERM` cuando recibe
 `Ctrl+C` o una señal de terminación.
@@ -150,26 +162,26 @@ make app
 Esto:
 
 1. Compila `remote-bot` (`arm64`) y lo coloca en
-   `macos/OpenCodeRemote/Resources/`.
+   `macos/Agentower/Resources/`.
 2. Genera el `MenuBarIcon` monocromo (template) y el `AppIcon.icns` desde
-   `macos/OpenCodeRemote/assets/app-icon.jpeg` con `sips` + Python/Pillow.
+   `macos/Agentower/assets/app-icon.jpeg` con `sips` + Python/Pillow.
 3. Regenera el `.xcodeproj` con XcodeGen.
 4. Compila con `xcodebuild` (`arm64`, sin firma de Apple Developer).
-5. Empaqueta en `dist/OpenCodeRemote.app` y lo firma ad-hoc.
+5. Empaqueta en `dist/Agentower.app` y lo firma ad-hoc.
 
-Salida: `dist/OpenCodeRemote.app` (~10.5 MB).
+Salida: `dist/Agentower.app` (~10.5 MB).
 
 ### Instalación y primer uso
 
 ```bash
 # Mover a Aplicaciones
-cp -R dist/OpenCodeRemote.app /Applications/
+cp -R dist/Agentower.app /Applications/
 
 # Quitar la marca de Gatekeeper (porque no tiene Developer ID)
-xattr -dr com.apple.quarantine /Applications/OpenCodeRemote.app
+xattr -dr com.apple.quarantine /Applications/Agentower.app
 
 # Abrir
-open /Applications/OpenCodeRemote.app
+open /Applications/Agentower.app
 ```
 
 Aparece un icono en la barra de menús. **Click izquierdo** abre el popover
@@ -177,12 +189,12 @@ con un toggle. **Click derecho** abre menú contextual.
 
 **Primera vez**: el toggle está deshabilitado. Click en **Settings…**, llena
 `WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN`, `ALLOWED_CHAT_ID`. Al guardar, la app
-escribe `~/Library/Application Support/OpenCodeRemote/.env` con permisos
+escribe `~/Library/Application Support/Agentower/.env` con permisos
 `0600` y a partir de ahí el toggle funciona.
 
 ### Auto-inicio al login
 
-En Settings marcá la casilla "Iniciar OpenCode Remote al arrancar macOS".
+En Settings marcá la casilla "Iniciar Agentower al arrancar macOS".
 La app llama `SMAppService.mainApp.register()` y aparece en *Ajustes del
 sistema → General → Ítems de inicio*. Solo funciona si la app vive en
 `/Applications/` o `~/Applications/`.
@@ -190,7 +202,7 @@ sistema → General → Ítems de inicio*. Solo funciona si la app vive en
 ### Cómo funciona el toggle
 
 - **Apagado → click**: arranca `Resources/remote-bot` con env vars
-  (`ENV_FILE=…/.env`, `REMOTE_STATE_PATH=…/state.db`, `GIN_MODE=release`,
+  (`ENV_FILE=…/.env`, `AGENTOWER_STATE_PATH=…/state.db`, `GIN_MODE=release`,
   y opcionalmente `TELEGRAM_API_ROOT` y `TELEGRAM_PROXY_URL` si los
   llenaste en Settings). El binario lee el `.env` y entra en long-polling
   de Telegram.
@@ -204,10 +216,10 @@ sistema → General → Ítems de inicio*. Solo funciona si la app vive en
 
 | Recurso | Ruta |
 |---|---|
-| Settings (UserDefaults) | `~/Library/Preferences/ai.opencode.remote.plist` |
-| `.env` para el bot | `~/Library/Application Support/OpenCodeRemote/.env` (`chmod 600`) |
-| State DB (SQLite) | `~/Library/Application Support/OpenCodeRemote/state.db` |
-| Logs | `~/Library/Logs/OpenCodeRemote/bot.log` |
+| Settings (UserDefaults) | `~/Library/Preferences/dev.agentower.app.plist` |
+| `.env` para el bot | `~/Library/Application Support/Agentower/.env` (`chmod 600`) |
+| State DB (SQLite) | `~/Library/Application Support/Agentower/state.db` |
+| Logs | `~/Library/Logs/Agentower/bot.log` |
 
 ### Prerrequisitos del entorno de build
 
@@ -271,7 +283,7 @@ sustituyan SQLite por un store en memoria y OpenCode por un servidor
 `httptest`.
 
 Sobre el binario, en macOS, vive opcionalmente la app nativa
-`OpenCodeRemote.app` (SwiftUI + AppKit) que actúa como launcher con UI,
+`Agentower.app` (SwiftUI + AppKit) que actúa como launcher con UI,
 persistencia y supervisión de logs.
 
 Consulta `docs/DESIGN.md` para el documento de diseño completo.
@@ -317,7 +329,7 @@ código fuente.
 │   ├── domain/                  entidades y puertos
 │   └── usecase/                 navegador del workspace, navegación, handler
 ├── macos/
-│   └── OpenCodeRemote/          wrapper Swift (status bar, settings, login item)
+│   └── Agentower/          wrapper Swift (status bar, settings, login item)
 ├── docs/
 │   ├── DESIGN.md                arquitectura y decisiones
 │   └── PRODUCT.md               alcance y hoja de ruta
@@ -326,7 +338,6 @@ código fuente.
 │   ├── dependabot.yml           actualizaciones semanales de dependencias
 │   ├── ISSUE_TEMPLATE/          bug report y feature request
 │   └── PULL_REQUEST_TEMPLATE.md checklist para contribuidores
-├── .env.example
 ├── .golangci.yml                configuración del linter
 ├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md

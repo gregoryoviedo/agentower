@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 // Publisher is the in-process store the HTTP control surface serves. The
@@ -241,7 +241,7 @@ func buildCompletionResponse(chatID int64, snap *domain.CompletedSession) domain
 	}
 	preview := snap.Preview
 	if preview == "" {
-		preview = "OpenCode terminó sin previsualización."
+		preview = "Agentower terminó sin previsualización."
 	}
 	var b strings.Builder
 	b.WriteString("✅ Tarea completada\n\n")

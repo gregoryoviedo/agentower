@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/opencode"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/storage/sqlite"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 // recordingCompletionPublisher records every PublishCompletion call so the

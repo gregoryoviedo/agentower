@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/config"
+	"github.com/gregoryoviedo/agentower/internal/config"
 )
 
 func TestLoadFromEnvFile(t *testing.T) {
@@ -16,12 +16,12 @@ WORKSPACE_ROOT=/Users/me/dev
 TELEGRAM_BOT_TOKEN=123:abc
 ALLOWED_CHAT_ID=42
 OPENCODE_PORT=4096
-REMOTE_STATE_PATH=/tmp/state.db
+AGENTOWER_STATE_PATH=/tmp/state.db
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("ENV_FILE", envPath)
-	for _, key := range []string{"WORKSPACE_ROOT", "TELEGRAM_BOT_TOKEN", "ALLOWED_CHAT_ID", "OPENCODE_PORT", "REMOTE_STATE_PATH"} {
+	for _, key := range []string{"WORKSPACE_ROOT", "TELEGRAM_BOT_TOKEN", "ALLOWED_CHAT_ID", "OPENCODE_PORT", "AGENTOWER_STATE_PATH"} {
 		t.Setenv(key, "")
 	}
 

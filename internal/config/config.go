@@ -44,9 +44,9 @@ func Load() (*Config, error) {
 	}
 	cfg.WorkspaceRoot = filepath.Clean(cfg.WorkspaceRoot)
 
-	cfg.StatePath = os.Getenv("REMOTE_STATE_PATH")
+	cfg.StatePath = os.Getenv("AGENTOWER_STATE_PATH")
 	if cfg.StatePath == "" {
-		cfg.StatePath = filepath.Join(cfg.WorkspaceRoot, ".opencode-remote", "state.db")
+		cfg.StatePath = filepath.Join(cfg.WorkspaceRoot, ".agentower", "state.db")
 	}
 
 	cfg.TelegramToken = os.Getenv("TELEGRAM_BOT_TOKEN")

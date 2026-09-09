@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 // typingRefreshInterval is how often we re-post the "typing…" chat action
@@ -102,7 +102,7 @@ func (h *Handler) HandleCommand(ctx context.Context, chatID int64, command strin
 
 func helpResponse() domain.BotResponse {
 	return domain.BotResponse{Text: strings.Join([]string{
-		"OpenCode Remote listo.",
+		"Agentower listo.",
 		"",
 		"• /projects — selecciona la carpeta del proyecto.",
 		"• /init — (re)arranca el servidor OpenCode en la carpeta activa.",
@@ -142,7 +142,7 @@ func (h *Handler) HandleText(ctx context.Context, chatID int64, text string) (do
 		return domain.BotResponse{Text: "OpenCode no pudo responder: " + err.Error()}, nil
 	}
 	if reply == "" {
-		return domain.BotResponse{Text: "OpenCode terminó la respuesta sin texto (revisa /diff por si hubo cambios silenciosos)."}, nil
+		return domain.BotResponse{Text: "Agentower terminó la respuesta sin texto (revisa /diff por si hubo cambios silenciosos)."}, nil
 	}
 	return domain.BotResponse{Text: truncateForTelegram(reply)}, nil
 }

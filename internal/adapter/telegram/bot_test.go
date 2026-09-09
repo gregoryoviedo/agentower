@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/telegram"
+	"github.com/gregoryoviedo/agentower/internal/adapter/telegram"
 )
 
 type handler struct{}

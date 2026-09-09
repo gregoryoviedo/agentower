@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/workspace"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/usecase"
+	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
+	"github.com/gregoryoviedo/agentower/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
 
 func TestWorkspaceBrowserNavigatesRecursively(t *testing.T) {

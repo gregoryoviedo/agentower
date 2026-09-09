@@ -1,4 +1,4 @@
-module github.com/gregoryoviedo/opencode-telegram-remote
+module github.com/gregoryoviedo/agentower
 
 go 1.22
 

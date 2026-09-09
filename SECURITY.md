@@ -1,6 +1,6 @@
 # Seguridad
 
-Este documento describe el modelo de confianza de OpenCode Remote y los
+Este documento describe el modelo de confianza de Agentower y los
 límites que el bot promete cumplir. Si vas a modificar el código que toca
 la whitelist, la validación del workspace o el manejo del token, léelo
 antes — todo cambio en esa superficie requiere un test focalizado.
@@ -90,9 +90,11 @@ manipular el navegador de otro aunque conozca un ID válido.
 
 Recomendaciones:
 
-- `.env` en `.gitignore`. El repositorio solo lleva `.env.example` con
-  valores de relleno.
-- Permisos `chmod 600 .env` en tu máquina.
+- `.env` en `.gitignore`. La app macOS escribe el suyo en
+  `~/Library/Application Support/Agentower/.env` con permisos `0600`;
+  no commitees nunca archivos con credenciales reales.
+- Si usás el binario CLI directamente, mantené tu `.env` con
+  `chmod 600`.
 - No lo pegues en issues, screenshots ni logs.
 
 ## Distribución

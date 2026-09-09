@@ -1,6 +1,6 @@
 # Design
 
-This document explains how OpenCode Remote is built and why. It complements
+This document explains how Agentower is built and why. It complements
 `README.md` (user-facing) and `PRODUCT.md` (scope) by recording the
 architectural decisions and trade-offs that shaped the code.
 
@@ -109,21 +109,21 @@ Adapters that implement the ports and depend on real-world libraries.
 The composition root: parse config, initialize adapters, wire up use
 cases, start the bot, react to `SIGINT` / `SIGTERM`.
 
-### `macos/OpenCodeRemote`
+### `macos/Agentower`
 
 Optional Swift menu-bar wrapper around the Go binary. It is a launcher,
 not a peer service: the only IPC is `Process` spawning plus the `.env`
 file. Files of note:
 
 - `BotController.swift`: spawns the bundled `remote-bot`, sets
-  `ENV_FILE`, `REMOTE_STATE_PATH`, `GIN_MODE`, and forwards
+  `ENV_FILE`, `AGENTOWER_STATE_PATH`, `GIN_MODE`, and forwards
   `TELEGRAM_API_ROOT` / `TELEGRAM_PROXY_URL` from the user-facing
   Settings into the child's environment. Captures stdout/stderr into
-  `~/Library/Logs/OpenCodeRemote/bot.log`.
+  `~/Library/Logs/Agentower/bot.log`.
 - `StatusBarController.swift`: `NSStatusItem` + `NSPopover`. Left click
   toggles popover, right click opens a context menu.
 - `SettingsView.swift`: SwiftUI form that writes both `UserDefaults` and
-  a `0600` `.env` to `~/Library/Application Support/OpenCodeRemote/`.
+  a `0600` `.env` to `~/Library/Application Support/Agentower/`.
 - `LoginItemManager.swift`: wrapper around `SMAppService.mainApp` for
   the "auto-start at login" toggle. The wrapper recognises
   `/Applications/` and `~/Applications/` as valid install locations.
@@ -147,7 +147,7 @@ file. Files of note:
   (Optional, macOS only)
 
 ┌──────────────────────────────┐  Process.spawn  ┌────────────────────┐
-│ OpenCodeRemote.app (Swift)   │ ───────────────►│ remote-bot binary  │
+│ Agentower.app (Swift)   │ ───────────────►│ remote-bot binary  │
 │  NSStatusItem + SwiftUI form │ .env + env vars │  (the same code)   │
 └──────────────────────────────┘                 └────────────────────┘
 ```
@@ -157,7 +157,7 @@ file. Files of note:
 - **Storage**: a single SQLite file with the runtime state.
 - **Storage (macOS wrapper)**: `UserDefaults` for Settings, a `0600`
   `.env` for the bot, and the bot's own SQLite file at
-  `~/Library/Application Support/OpenCodeRemote/state.db`.
+  `~/Library/Application Support/Agentower/state.db`.
 - **No IPC between wrapper and bot**: the wrapper never parses the
   bot's stdout. Lifecycle is supervised via `Process` + `terminationHandler`.
 

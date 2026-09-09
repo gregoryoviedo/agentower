@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
 )
 
 func TestClientUsesOpenCodeAPI(t *testing.T) {

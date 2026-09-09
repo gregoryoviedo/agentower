@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/opencode"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/storage/sqlite"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/workspace"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/usecase"
+	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
+	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
+	"github.com/gregoryoviedo/agentower/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
 
 // TestHandlerContinueAndDiffCallbacks makes sure the quick-tap buttons on

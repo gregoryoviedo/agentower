@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
 )
 
 func newDiscardLogger() *slog.Logger {

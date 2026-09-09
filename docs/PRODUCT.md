@@ -1,11 +1,11 @@
 # Product
 
-This document defines what OpenCode Remote is, what it does today, what it
+This document defines what Agentower is, what it does today, what it
 deliberately does not do, and where it is going next.
 
 ## Vision
 
-OpenCode Remote turns Telegram into a thin remote control for a local
+Agentower turns Telegram into a thin remote control for a local
 `opencode serve` instance. The bot is the only surface you interact with on
 your phone; OpenCode keeps doing the work locally on your Mac.
 
@@ -57,7 +57,7 @@ On macOS the wrapper is the convenient launcher:
 - Sentinel errors in `domain/errors.go` so every recoverable failure can
   be matched programmatically.
 
-#### macOS wrapper (`OpenCodeRemote.app`)
+#### macOS wrapper (`Agentower.app`)
 
 - Menu-bar status icon with template rendering (auto-adapts to dark /
   light menu bars).
@@ -66,11 +66,11 @@ On macOS the wrapper is the convenient launcher:
   *Abrir registro*, *Salir*.
 - SwiftUI Settings window with: `WORKSPACE_ROOT` (with folder picker),
   `TELEGRAM_BOT_TOKEN`, `ALLOWED_CHAT_ID`, `OPENCODE_PORT` (stepper),
-  `OPENCODE_BIN`, `OPENCODE_AUTOSTART`, `REMOTE_STATE_PATH`,
+  `OPENCODE_BIN`, `OPENCODE_AUTOSTART`, `AGENTOWER_STATE_PATH`,
   `TELEGRAM_API_ROOT`, `TELEGRAM_PROXY_URL`.
 - Persistence in `UserDefaults` plus a `chmod 600` `.env` regenerated on
-  every save inside `~/Library/Application Support/OpenCodeRemote/`.
-- Logs at `~/Library/Logs/OpenCodeRemote/bot.log`, accessible from the
+  every save inside `~/Library/Application Support/Agentower/`.
+- Logs at `~/Library/Logs/Agentower/bot.log`, accessible from the
   popover menu.
 - Auto-start at login via `SMAppService.mainApp` (Settings toggle).
 - arm64-only build pipeline (`make app`) that compiles the Go binary,

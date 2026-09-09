@@ -4,15 +4,15 @@ backend/bin/
 *.out
 
 # macOS menu bar app
-macos/OpenCodeRemote/build/
-macos/OpenCodeRemote/OpenCodeRemote.xcodeproj/
-macos/OpenCodeRemote/OpenCodeRemote/Resources/remote-bot
+macos/Agentower/build/
+macos/Agentower/Agentower.xcodeproj/
+macos/Agentower/Agentower/Resources/remote-bot
 dist/
 *.dSYM/
 
 # State and logs
-.opencode-remote/
-.opencode.pid
+.agentower/
+.agentower.pid
 remote-bot
 *.db
 *.db-journal

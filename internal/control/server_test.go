@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/adapter/storage/sqlite"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/control"
-	"github.com/gregoryoviedo/opencode-telegram-remote/internal/domain"
+	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
+	"github.com/gregoryoviedo/agentower/internal/control"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 // recordingNotifier implements domain.ChatNotifier for the control server
