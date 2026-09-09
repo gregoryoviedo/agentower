@@ -157,12 +157,25 @@ struct SettingsView: View {
     }
 
     private func handlePaste(into field: Field, providers: [NSItemProvider]) {
-        guard let provider = providers.first else { return }
-        provider.loadObject(ofClass: NSString.self) { obj, _ in
-            guard let str = obj as? NSString else { return }
-            DispatchQueue.main.async {
-                applyPaste(str as String, to: field)
+        // SwiftUI suppresses the default paste action when .onPasteCommand
+        // is attached, so without a fallback a SecureField or a TextField
+        // that yields no NSItemProvider simply does nothing on cmd+v.
+        // We try the providers first (drag & drop, programmatic paste) and
+        // fall back to NSPasteboard.general so cmd+v always works.
+        if let provider = providers.first {
+            provider.loadObject(ofClass: NSString.self) { [weak self] obj, _ in
+                let resolved = (obj as? NSString) as String?
+                    ?? NSPasteboard.general.string(forType: .string)
+                    ?? ""
+                guard !resolved.isEmpty, let self = self else { return }
+                DispatchQueue.main.async {
+                    self.applyPaste(resolved, to: field)
+                }
             }
+            return
+        }
+        if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
+            applyPaste(text, to: field)
         }
     }
 
