@@ -143,10 +143,8 @@ Adapters that implement the ports and depend on real-world libraries.
 - `adapter/workspace`: thin wrapper around the standard `os` filesystem
   helpers, exposed as a `WorkspaceFS` port to keep tests hermetic.
 - `config`: `.env` loader (godotenv.Overload), parent-directory walk,
-  `ENV_FILE` override. Reads `OPENCODE_*` (legacy) plus
-  `AGENT_<KIND>_*` so the Swift wrapper can pass them as real
-  `proc.environment` values instead of relying on the `.env`
-  round-trip.
+  `ENV_FILE` override. Reads the mandatory Telegram/workspace vars and
+  any per-agent `AGENT_<KIND>_*` overrides passed by the wrapper.
 
 ### `cmd/remote-bot/main.go`
 
@@ -197,9 +195,9 @@ file. Files of note:
 ```
 
 - **Inbound (Go bot)**: only `api.telegram.org`. No listening sockets.
-- **Outbound (Go bot)**: loopback only — `127.0.0.1:<OPENCODE_PORT>` for
-  opencode, or stdin/stdout pipes for Claude / Codex / Kiro, or a
-  loopback JSON-RPC stream for the GitHub Copilot LSP.
+- **Outbound (Go bot)**: loopback only — `127.0.0.1:4096` for opencode,
+  or stdin/stdout pipes for Claude / Codex / Kiro, or a loopback
+  JSON-RPC stream for the GitHub Copilot LSP.
 - **Storage**: a single SQLite file with the runtime state.
 - **Storage (macOS wrapper)**: `UserDefaults` for Settings, a `0600`
   `.env` for the bot, and the bot's own SQLite file at

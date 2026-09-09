@@ -70,14 +70,14 @@ func main() {
 			break
 		}
 	}
-	opencodeClient, err := agents_opencode.NewClient("http://127.0.0.1:"+strconv.Itoa(cfg.OpenCodePort), nil)
+	opencodeClient, err := agents_opencode.NewClient("http://127.0.0.1:"+strconv.Itoa(agents.DefaultOpenCodePort), nil)
 	if err != nil {
 		logger.Error("initialize opencode client", "error", err)
 		os.Exit(1)
 	}
 	opencodeManager := agents_opencode.NewManager(agents_opencode.ManagerOptions{
-		Bin:    cfg.OpenCodeBin,
-		Port:   cfg.OpenCodePort,
+		Bin:    opencodeBin(descriptors, opencodeDescriptor),
+		Port:   agents.DefaultOpenCodePort,
 		Logger: logger.With("component", "opencode-server"),
 	})
 	claudeManager := claude.NewManager("claude", agents.DefaultClaudePort)
@@ -120,7 +120,7 @@ func main() {
 		// If opencode is missing we still expose the descriptor so the
 		// UI can show the Próximamente card, but the registry's
 		// Available() returns false. The boot log makes this loud.
-		logger.Warn("opencode binary not found in PATH", "expected_bin", cfg.OpenCodeBin)
+		logger.Warn("opencode binary not found in PATH", "expected_bin", "opencode")
 	}
 	serverManager := agents.NewOpenCodeServerManager(opencodeManager)
 	_ = claudeManager  // kept alive for the lifetime of the bot; sessions spawn on first use
@@ -128,15 +128,8 @@ func main() {
 	_ = kiroManager    // same
 	_ = copilotManager // same: lazily dials the LSP server on first use
 
-	if cfg.AutoStart {
-		if err := serverManager.Start(stopContext, domain.AgentOpenCode, cfg.WorkspaceRoot); err != nil {
-			logger.Error("start opencode server", "error", err)
-			os.Exit(1)
-		}
-		logger.Info("opencode server started", "port", cfg.OpenCodePort, "cwd", cfg.WorkspaceRoot)
-	} else {
-		logger.Info("opencode autostart disabled; send /init from Telegram to bring the server up", "port", cfg.OpenCodePort)
-	}
+	logger.Info("opencode autostart disabled; send /init from Telegram to bring the server up",
+		"port", agents.DefaultOpenCodePort)
 	defer serverManager.StopAll()
 
 	navigation := usecase.NewNavigationService(browser, repository)
@@ -193,7 +186,7 @@ func main() {
 
 	logger.Info("remote bot started",
 		"workspace", browser.Root(),
-		"opencode_port", cfg.OpenCodePort,
+		"opencode_port", agents.DefaultOpenCodePort,
 		"state_path", cfg.StatePath,
 		"available_agents", registry.Available(),
 	)
@@ -260,4 +253,20 @@ func copilotLaunchConfig(desc domain.AgentDescriptor) copilot.LaunchConfig {
 
 func isVSCodeCopilotBundle(path string) bool {
 	return strings.HasSuffix(path, "/dist/extension.js") || strings.Contains(path, ".vscode") && strings.HasSuffix(path, "extension.js")
+}
+
+// opencodeBin returns the binary the opencode manager should spawn. If
+// the detector located the binary in PATH we use that absolute path;
+// otherwise we fall back to the bare "opencode" name so the manager
+// resolves it again through the parent's PATH at spawn time.
+func opencodeBin(descriptors []domain.AgentDescriptor, opencode domain.AgentDescriptor) string {
+	if opencode.Bin != "" {
+		return opencode.Bin
+	}
+	for _, d := range descriptors {
+		if d.Kind == domain.AgentOpenCode && d.Bin != "" {
+			return d.Bin
+		}
+	}
+	return "opencode"
 }

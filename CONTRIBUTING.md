@@ -47,7 +47,7 @@ internal/
     telegram/  long polling, whitelist, callbacks
     storage/   repositorio SQLite (runtime_state, agent_state, directory_navigation, completed_session)
     workspace/ adaptador de filesystem
-  config/      cargador de .env (OPENCODE_* legacy + AGENT_<KIND>_*)
+    config/      cargador de .env (AGENT_<KIND>_*)
 cmd/remote-bot/ composition root
 ```
 

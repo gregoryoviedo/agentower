@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @ObservedObject var appState: AppState
@@ -9,10 +8,6 @@ struct SettingsView: View {
     @State private var workspaceRoot: String = ""
     @State private var telegramBotToken: String = ""
     @State private var allowedChatID: String = ""
-
-    @State private var openCodePort: Int = 4096
-    @State private var openCodeBin: String = "opencode"
-    @State private var openCodeAutostart: Bool = false
 
     @State private var agentowerStatePath: String = ""
     @State private var telegramAPIRoot: String = ""
@@ -27,7 +22,7 @@ struct SettingsView: View {
 
     @FocusState private var focusedField: Field?
     private enum Field: Hashable {
-        case workspaceRoot, token, chatID, port, bin, statePath, apiRoot, proxyURL
+        case workspaceRoot, token, chatID, statePath, apiRoot, proxyURL
         case agentBin(Int), agentArgs(Int)
     }
 
@@ -102,26 +97,23 @@ struct SettingsView: View {
     @ViewBuilder
     private var telegramSection: some View {
         Section("Bot de Telegram") {
-            LabeledContent("WORKSPACE_ROOT") {
+            LabeledContent("Carpeta del workspace") {
                 HStack {
-                    TextField("/Users/you/dev", text: $workspaceRoot)
+                    TextField("", text: $workspaceRoot)
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedField, equals: .workspaceRoot)
-                        .onPasteCommand(of: [UTType.text]) { handlePaste(into: .workspaceRoot, providers: $0) }
                     Button("Elegir…") { pickWorkspace() }
                 }
             }
-            LabeledContent("TELEGRAM_BOT_TOKEN") {
-                SecureField("token de @BotFather", text: $telegramBotToken)
+            LabeledContent("Token del bot") {
+                SecureField("", text: $telegramBotToken)
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .token)
-                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .token, providers: $0) }
             }
-            LabeledContent("ALLOWED_CHAT_ID") {
-                TextField("id numérico", text: $allowedChatID)
+            LabeledContent("ID del chat permitido") {
+                TextField("", text: $allowedChatID)
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .chatID)
-                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .chatID, providers: $0) }
             }
         }
     }
@@ -144,7 +136,6 @@ struct SettingsView: View {
     @ViewBuilder
     private var agentsFormContent: some View {
         agentsSection
-        opencodeBackCompatSection
     }
 
     private var agentsSection: some View {
@@ -183,7 +174,6 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .disabled(disabled)
                     .focused($focusedField, equals: .agentBin(row.wrappedValue.id))
-                    .onPasteCommand(of: [UTType.text]) { handleAgentPaste(row: row.wrappedValue.id, providers: $0) }
             }
             HStack {
                 Stepper(value: row.port, in: 1...65535) {
@@ -202,35 +192,10 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .disabled(disabled)
                     .focused($focusedField, equals: .agentArgs(row.wrappedValue.id))
-                    .onPasteCommand(of: [UTType.text]) { handleAgentPaste(row: row.wrappedValue.id, providers: $0) }
             }
         }
         .padding(.vertical, 4)
         .opacity(disabled ? 0.6 : 1.0)
-    }
-
-    private var opencodeBackCompatSection: some View {
-        Section("Servidor OpenCode (legacy)") {
-            Stepper(value: $openCodePort, in: 1...65535) {
-                HStack {
-                    Text("OPENCODE_PORT")
-                    Spacer()
-                    Text("\(openCodePort)")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-            }
-            LabeledContent("OPENCODE_BIN") {
-                TextField("opencode", text: $openCodeBin)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focusedField, equals: .bin)
-                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .bin, providers: $0) }
-            }
-            Toggle("OPENCODE_AUTOSTART", isOn: $openCodeAutostart)
-            Text("Estos campos se mantienen por compatibilidad con .env antiguos; los nuevos valores viven en la sección Agentes de IA.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
     }
 
     private var advancedSection: some View {
@@ -239,19 +204,16 @@ struct SettingsView: View {
                 TextField("(por defecto junto a WORKSPACE_ROOT)", text: $agentowerStatePath)
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .statePath)
-                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .statePath, providers: $0) }
             }
             LabeledContent("TELEGRAM_API_ROOT") {
                 TextField("(por defecto de telebot)", text: $telegramAPIRoot)
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .apiRoot)
-                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .apiRoot, providers: $0) }
             }
             LabeledContent("TELEGRAM_PROXY_URL") {
                 TextField("http://host:port", text: $telegramProxyURL)
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .proxyURL)
-                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .proxyURL, providers: $0) }
             }
         }
     }
@@ -284,24 +246,6 @@ struct SettingsView: View {
         }
     }
 
-    private func handlePaste(into field: Field, providers: [NSItemProvider]) {
-        if let provider = providers.first {
-            provider.loadObject(ofClass: NSString.self) { obj, _ in
-                let resolved = (obj as? NSString) as String?
-                    ?? NSPasteboard.general.string(forType: .string)
-                    ?? ""
-                guard !resolved.isEmpty else { return }
-                DispatchQueue.main.async { [field] in
-                    self.applyPaste(resolved, to: field)
-                }
-            }
-            return
-        }
-        if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
-            applyPaste(text, to: field)
-        }
-    }
-
     private func pickWorkspace() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -314,66 +258,11 @@ struct SettingsView: View {
         }
     }
 
-    private func handleAgentPaste(row id: Int, providers: [NSItemProvider]) {
-        guard let index = agentRows.firstIndex(where: { $0.id == id }) else { return }
-        let closure: (String) -> Void = { text in
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                agentRows[index].bin = trimmed
-            }
-        }
-        if let provider = providers.first {
-            provider.loadObject(ofClass: NSString.self) { obj, _ in
-                let text = (obj as? NSString) as String?
-                    ?? NSPasteboard.general.string(forType: .string)
-                    ?? ""
-                guard !text.isEmpty else { return }
-                DispatchQueue.main.async { closure(text) }
-            }
-            return
-        }
-        if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
-            closure(text)
-        }
-    }
-
-    private func applyPaste(_ text: String, to field: Field) {
-        switch field {
-        case .workspaceRoot:
-            workspaceRoot = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .token:
-            telegramBotToken = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .chatID:
-            let digits = text.filter { $0.isNumber || $0 == "-" }
-            allowedChatID = String(digits.prefix(20))
-        case .port:
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let p = Int(trimmed), p >= 1, p <= 65535 {
-                openCodePort = p
-            } else if !trimmed.isEmpty {
-                errorMessage = "OPENCODE_PORT debe ser un entero entre 1 y 65535."
-            }
-        case .bin:
-            openCodeBin = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .statePath:
-            agentowerStatePath = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .apiRoot:
-            telegramAPIRoot = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .proxyURL:
-            telegramProxyURL = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .agentBin, .agentArgs:
-            break
-        }
-    }
-
     private func load() {
         let cfg = appState.configuration
         workspaceRoot = cfg.workspaceRoot
         telegramBotToken = cfg.telegramBotToken
         allowedChatID = cfg.allowedChatID
-        openCodePort = cfg.openCodePort
-        openCodeBin = cfg.openCodeBin
-        openCodeAutostart = cfg.openCodeAutostart
         agentowerStatePath = cfg.agentowerStatePath
         telegramAPIRoot = cfg.telegramAPIRoot
         telegramProxyURL = cfg.telegramProxyURL
@@ -406,16 +295,10 @@ struct SettingsView: View {
             workspaceRoot: workspaceRoot.trimmingCharacters(in: .whitespacesAndNewlines),
             telegramBotToken: telegramBotToken.trimmingCharacters(in: .whitespacesAndNewlines),
             allowedChatID: allowedChatID.trimmingCharacters(in: .whitespacesAndNewlines),
-            openCodePort: openCodePort,
-            openCodeBin: openCodeBin.trimmingCharacters(in: .whitespacesAndNewlines),
-            openCodeAutostart: openCodeAutostart,
             agentowerStatePath: agentowerStatePath.trimmingCharacters(in: .whitespacesAndNewlines),
             telegramAPIRoot: telegramAPIRoot.trimmingCharacters(in: .whitespacesAndNewlines),
             telegramProxyURL: telegramProxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
         )
-        if cfg.openCodeBin.isEmpty {
-            cfg.openCodeBin = "opencode"
-        }
         var agentsMap: [String: AgentSettings] = [:]
         for row in agentRows {
             agentsMap[row.kind] = AgentSettings(

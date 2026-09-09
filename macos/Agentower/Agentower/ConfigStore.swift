@@ -5,10 +5,6 @@ struct BotConfiguration: Equatable {
     var telegramBotToken: String = ""
     var allowedChatID: String = ""
 
-    var openCodePort: Int = 4096
-    var openCodeBin: String = "opencode"
-    var openCodeAutostart: Bool = false
-
     var agentowerStatePath: String = ""
     var telegramAPIRoot: String = ""
     var telegramProxyURL: String = ""
@@ -56,9 +52,6 @@ final class ConfigStore {
         static let workspaceRoot = "workspaceRoot"
         static let telegramBotToken = "telegramBotToken"
         static let allowedChatID = "allowedChatID"
-        static let openCodePort = "openCodePort"
-        static let openCodeBin = "openCodeBin"
-        static let openCodeAutostart = "openCodeAutostart"
         static let agentowerStatePath = "agentowerStatePath"
         static let telegramAPIRoot = "telegramAPIRoot"
         static let telegramProxyURL = "telegramProxyURL"
@@ -108,9 +101,6 @@ final class ConfigStore {
             workspaceRoot: defaults.string(forKey: Key.workspaceRoot) ?? "",
             telegramBotToken: defaults.string(forKey: Key.telegramBotToken) ?? "",
             allowedChatID: defaults.string(forKey: Key.allowedChatID) ?? "",
-            openCodePort: defaults.object(forKey: Key.openCodePort) as? Int ?? 4096,
-            openCodeBin: defaults.string(forKey: Key.openCodeBin) ?? "opencode",
-            openCodeAutostart: defaults.bool(forKey: Key.openCodeAutostart),
             agentowerStatePath: defaults.string(forKey: Key.agentowerStatePath) ?? "",
             telegramAPIRoot: defaults.string(forKey: Key.telegramAPIRoot) ?? "",
             telegramProxyURL: defaults.string(forKey: Key.telegramProxyURL) ?? ""
@@ -123,9 +113,6 @@ final class ConfigStore {
         defaults.set(config.workspaceRoot, forKey: Key.workspaceRoot)
         defaults.set(config.telegramBotToken, forKey: Key.telegramBotToken)
         defaults.set(config.allowedChatID, forKey: Key.allowedChatID)
-        defaults.set(config.openCodePort, forKey: Key.openCodePort)
-        defaults.set(config.openCodeBin, forKey: Key.openCodeBin)
-        defaults.set(config.openCodeAutostart, forKey: Key.openCodeAutostart)
         defaults.set(config.agentowerStatePath, forKey: Key.agentowerStatePath)
         defaults.set(config.telegramAPIRoot, forKey: Key.telegramAPIRoot)
         defaults.set(config.telegramProxyURL, forKey: Key.telegramProxyURL)
@@ -248,14 +235,6 @@ final class ConfigStore {
                 available: available
             )
         }
-        // Back-compat: legacy OPENCODE_PORT/BIN slots stay in sync
-        // with the opencode row so the previous Settings continue
-        // working without trampling the new multi-agent UI.
-        if var opencodeRow = out["opencode"] {
-            opencodeRow.port = cfg.openCodePort
-            opencodeRow.bin = cfg.openCodeBin
-            out["opencode"] = opencodeRow
-        }
         return out
     }
 
@@ -265,33 +244,19 @@ final class ConfigStore {
         lines.append("TELEGRAM_BOT_TOKEN=\(shellQuote(config.telegramBotToken))")
         lines.append("ALLOWED_CHAT_ID=\(shellQuote(config.allowedChatID))")
 
-        // Per-agent section. Opencode uses OPENCODE_* (back-compat) for
-        // its port and bin so existing bot deployments keep reading
-        // the same names; the rest of the agents use AGENT_<KIND>_*
-        // and the wrapper includes both for opencode.
         for (kind, settings) in config.agents {
-            let prefix = kind == "opencode" ? "OPENCODE" : "AGENT_" + kind.uppercased()
-            if kind == "opencode" {
-                lines.append("\(prefix)_PORT=\(settings.port)")
-                if !settings.bin.isEmpty {
-                    lines.append("\(prefix)_BIN=\(shellQuote(settings.bin))")
-                }
-            } else {
-                lines.append("\(prefix)_ENABLED=\(settings.enabled ? "true" : "false")")
-                if !settings.bin.isEmpty {
-                    lines.append("\(prefix)_BIN=\(shellQuote(settings.bin))")
-                }
-                if settings.port > 0 {
-                    lines.append("\(prefix)_PORT=\(settings.port)")
-                }
-                let trimmedArgs = settings.args.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedArgs.isEmpty {
-                    lines.append("\(prefix)_ARGS=\(shellQuote(trimmedArgs))")
-                }
+            let prefix = "AGENT_" + kind.uppercased()
+            lines.append("\(prefix)_ENABLED=\(settings.enabled ? "true" : "false")")
+            if !settings.bin.isEmpty {
+                lines.append("\(prefix)_BIN=\(shellQuote(settings.bin))")
             }
-        }
-        if config.openCodeAutostart {
-            lines.append("OPENCODE_AUTOSTART=true")
+            if settings.port > 0 {
+                lines.append("\(prefix)_PORT=\(settings.port)")
+            }
+            let trimmedArgs = settings.args.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedArgs.isEmpty {
+                lines.append("\(prefix)_ARGS=\(shellQuote(trimmedArgs))")
+            }
         }
         if !config.agentowerStatePath.isEmpty {
             lines.append("AGENTOWER_STATE_PATH=\(shellQuote(config.agentowerStatePath))")

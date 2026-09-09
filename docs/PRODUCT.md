@@ -57,8 +57,7 @@ On macOS the wrapper is the convenient launcher:
   navigation).
 - Configuration loaded from `.env` (with parent directory walk and
   `ENV_FILE` override). Per-agent settings live under
-  `AGENT_<KIND>_ENABLED/BIN/PORT/ARGS`; the legacy `OPENCODE_*` keys
-  stay for backwards compatibility.
+  `AGENT_<KIND>_ENABLED/BIN/PORT/ARGS`.
 - Agent subprocess lifecycle: each adapter owns the per-kind lifecycle
   (opencode via HTTP+SIGTERM, Claude/Codex/Kiro via stdio JSON-RPC,
   Copilot via LSP). The `AgentServerManager` interface routes
@@ -79,10 +78,8 @@ On macOS the wrapper is the convenient launcher:
 - SwiftUI Settings window with: `WORKSPACE_ROOT` (con folder picker),
   `TELEGRAM_BOT_TOKEN`, `ALLOWED_CHAT_ID`, sección **Agentes de IA** (una
   fila por agente con toggle enable/disable, binario, puerto y args),
-  sección **Servidor OpenCode (legacy)** con `OPENCODE_PORT`/`BIN`/
-  `AUTOSTART` por retrocompatibilidad, y la sección **Avanzado** con
-  `AGENTOWER_STATE_PATH`, `TELEGRAM_API_ROOT`, `TELEGRAM_PROXY_URL`.
-  cmd+v funciona en todos los TextField y SecureField (fix de pegado).
+  y la sección **Avanzado** con `AGENTOWER_STATE_PATH`,
+  `TELEGRAM_API_ROOT`, `TELEGRAM_PROXY_URL`.
 - Persistence in `UserDefaults` plus a `chmod 600` `.env` regenerated on
   every save inside `~/Library/Application Support/Agentower/`.
 - Logs at `~/Library/Logs/Agentower/bot.log`, accessible from the
@@ -113,8 +110,8 @@ On macOS the wrapper is the convenient launcher:
 - The Telegram Bot API is the only network surface the Go bot depends
   on.
 - The active agent is assumed to be reachable on a loopback port
-  (`OPENCODE_PORT`, `CLAUDE_PORT`, …) or via stdin/stdout when the
-  adapter is stdio-based.
+  (`AGENT_OPENCODE_PORT`, `AGENT_CLAUDE_PORT`, …) or via stdin/stdout
+  when the adapter is stdio-based.
 - The bot token and chat ID live in `.env` (or shell env), never in
   SQLite.
 - SQLite stores the active project, active session, per-chat active

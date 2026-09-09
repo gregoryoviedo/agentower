@@ -96,19 +96,12 @@ preferís no usar archivo.
 | `TELEGRAM_BOT_TOKEN` | Token del bot desde `@BotFather`.                      |
 | `ALLOWED_CHAT_ID`    | Tu ID numérico de usuario desde `@userinfobot`.        |
 
-### Variables opcionales (opencode, heredadas)
-
-| Variable              | Por defecto                                            | Descripción                                                                                              |
-|-----------------------|--------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
-| `OPENCODE_PORT`       | `4096`                                                 | Puerto para `opencode serve` local.                                                                      |
-| `OPENCODE_BIN`        | `opencode`                                             | Binario a lanzar cuando el bot auto-arranca el servidor. Usa ruta absoluta si no está en `PATH`.         |
-| `OPENCODE_AUTOSTART`  | `false`                                                | Si está activo, el bot lanza `opencode serve --port <p>` en `WORKSPACE_ROOT` al iniciarse.               |
-
 ### Variables opcionales (multi-agente)
 
-Cada agente tiene su propio slot. El prefijo es `AGENT_<KIND>_` en
-mayúsculas (`AGENT_CLAUDE_`, `AGENT_CODEX_`, `AGENT_KIRO_`,
-`AGENT_COPILOT_`). Las claves disponibles son:
+Cada agente tiene su propio slot, incluido opencode. El prefijo es
+`AGENT_<KIND>_` en mayúsculas (`AGENT_OPENCODE_`, `AGENT_CLAUDE_`,
+`AGENT_CODEX_`, `AGENT_KIRO_`, `AGENT_COPILOT_`). Las claves
+disponibles son:
 
 | Clave                      | Por defecto | Descripción                                                                 |
 |----------------------------|-------------|-----------------------------------------------------------------------------|
@@ -155,10 +148,6 @@ debe a que `opencode serve` queda atado a la carpeta desde la que lo
 arrancas, así que el bot prefiere esperar a que le digas qué proyecto
 quieres antes de gastar un puerto.
 
-Si prefieres el comportamiento antiguo (`/init` implícito en el workspace
-_root_), añadí `OPENCODE_AUTOSTART=true` al `.env` que mantiene la app
-macOS en `~/Library/Application Support/Agentower/`.
-
 Sea como sea, el bot siempre apaga el servidor con `SIGTERM` cuando recibe
 `Ctrl+C` o una señal de terminación.
 
@@ -195,9 +184,6 @@ la vez y el bot cambia el "activo" en Telegram sin matar los demás:
 - **`/init [ruta]`**: atajo para rearrancar el agente activo sin cambiar de
   agente. Si pasas una ruta, se usa como nueva CWD; si no, se reutiliza
   la carpeta activa.
-- **`OPENCODE_AUTOSTART` (def. `false`)**: si lo activas, el bot arranca
-  opencode en `WORKSPACE_ROOT` al iniciarse; el resto de los agentes
-  quedan a la espera de un `/agent` que los active.
 
 > Si el agente activo está apagado, cualquier comando (`/status`,
 > `/sessions`, `/diff`, `/undo`, texto libre) devuelve un mensaje pidiéndote

@@ -18,18 +18,11 @@ type Config struct {
 	TelegramAPIRoot string
 	TelegramProxy   string
 	AllowedChatID   int64
-	OpenCodePort    int
-	OpenCodeBin     string
-	AutoStart       bool
 	EnvFile         string
 }
 
 func Load() (*Config, error) {
-	cfg := &Config{
-		OpenCodePort: 4096,
-		OpenCodeBin:  "opencode",
-		AutoStart:    false,
-	}
+	cfg := &Config{}
 
 	if path, ok := locateEnv(); ok {
 		if err := godotenv.Overload(path); err != nil {
@@ -67,37 +60,7 @@ func Load() (*Config, error) {
 	}
 	cfg.AllowedChatID = chatID
 
-	if raw := os.Getenv("OPENCODE_PORT"); raw != "" {
-		port, err := strconv.Atoi(raw)
-		if err != nil || port < 1 || port > 65535 {
-			return nil, fmt.Errorf("OPENCODE_PORT must be between 1 and 65535: %q", raw)
-		}
-		cfg.OpenCodePort = port
-	}
-
-	if raw := os.Getenv("OPENCODE_BIN"); raw != "" {
-		cfg.OpenCodeBin = raw
-	}
-
-	if raw := os.Getenv("OPENCODE_AUTOSTART"); raw != "" {
-		parsed, err := parseBool(raw)
-		if err != nil {
-			return nil, fmt.Errorf("OPENCODE_AUTOSTART must be a boolean: %q", raw)
-		}
-		cfg.AutoStart = parsed
-	}
-
 	return cfg, nil
-}
-
-func parseBool(raw string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "true", "yes", "on":
-		return true, nil
-	case "0", "false", "no", "off":
-		return false, nil
-	}
-	return false, errors.New("invalid boolean")
 }
 
 func locateEnv() (string, bool) {
