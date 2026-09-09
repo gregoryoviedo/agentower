@@ -36,7 +36,9 @@ internal/
   domain/      entidades y puertos (sin imports externos)
   usecase/     navegador del workspace, navegación, bot handler
   adapter/
-    opencode/  cliente REST + SSE + manager del subproceso
+    agents/
+      opencode/  cliente REST + manager del subproceso (AgentAdapter para opencode)
+      ...        futuros adapters para claude, codex, kiro, copilot
     telegram/  long polling, whitelist, callbacks
     storage/   repositorio SQLite
     workspace/ adaptador de filesystem
@@ -79,16 +81,19 @@ pequeña y cubrir cada rama en el test.
 4. Pasa el valor al componente que lo necesite desde
    `cmd/remote-bot/main.go`.
 
-## Añadir un endpoint nuevo de OpenCode
+## Añadir un endpoint nuevo a un agente
 
-1. Añade el método al puerto `OpenCodeClient` en
-   `internal/domain/ports.go`.
-2. Implementa el método en el adapter
-   `internal/adapter/opencode/client.go`. Si el endpoint es un stream,
-   usa el cliente `stream` (sin timeout); si es una operación normal,
-   usa `http`.
-3. Cubre con un test usando `httptest.NewServer` (mira
-   `client_test.go` como referencia).
+1. Añade el método al puerto `AgentAdapter` en
+   `internal/domain/ports.go` (sólo si todavía no existe).
+2. Implementa el método en el adapter concreto:
+   `internal/adapter/agents/<kind>/client.go`. Si el endpoint es un
+   stream, usa un cliente HTTP sin timeout; si es una operación
+   normal, usa el cliente con `Timeout`. Para agentes no-HTTP
+   (Claude/Codex/Kiro/Copilot), sigue el patrón de transporte del
+   adapter (stdio JSON-RPC o LSP) y reusa el subproceso gestionado
+   por `internal/adapter/agents/subprocess`.
+3. Cubre con un test usando `httptest.NewServer` o un `fakebin` (mira
+   `internal/adapter/agents/opencode/client_test.go` como referencia).
 4. Conéctalo en el caso del comando o flujo que corresponda en
    `internal/usecase/bot_handler.go`.
 

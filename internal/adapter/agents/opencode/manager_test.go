@@ -1,4 +1,4 @@
-package opencode_test
+package agents_opencode_test
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 )
 
 func newDiscardLogger() *slog.Logger {
@@ -66,7 +66,7 @@ func TestManagerStartInWorkingDirAndStops(t *testing.T) {
 	defer srv.Close()
 
 	bin := buildFakeBin(t)
-	manager := opencode.NewManager(opencode.ManagerOptions{
+	manager := agents_opencode.NewManager(agents_opencode.ManagerOptions{
 		Bin:    bin,
 		Port:   portFromURL(t, srv.URL),
 		Logger: newDiscardLogger(),
@@ -101,7 +101,7 @@ func TestManagerStartInWorkingDirAndStops(t *testing.T) {
 
 func TestManagerStartRejectsEmptyWorkingDir(t *testing.T) {
 	bin := buildFakeBin(t)
-	manager := opencode.NewManager(opencode.ManagerOptions{
+	manager := agents_opencode.NewManager(agents_opencode.ManagerOptions{
 		Bin:    bin,
 		Port:   4096,
 		Logger: newDiscardLogger(),
@@ -113,7 +113,7 @@ func TestManagerStartRejectsEmptyWorkingDir(t *testing.T) {
 
 func TestManagerStartRejectsNonDirectory(t *testing.T) {
 	bin := buildFakeBin(t)
-	manager := opencode.NewManager(opencode.ManagerOptions{
+	manager := agents_opencode.NewManager(agents_opencode.ManagerOptions{
 		Bin:    bin,
 		Port:   4096,
 		Logger: newDiscardLogger(),
@@ -145,7 +145,7 @@ func TestManagerAdoptsAlreadyRunningServer(t *testing.T) {
 	// attempt to spawn would surface immediately as an error. The adopt
 	// path must short-circuit before reaching exec.LookPath.
 	missingBin := filepath.Join(t.TempDir(), "does-not-exist")
-	manager := opencode.NewManager(opencode.ManagerOptions{
+	manager := agents_opencode.NewManager(agents_opencode.ManagerOptions{
 		Bin:    missingBin,
 		Port:   portFromURL(t, srv.URL),
 		Logger: newDiscardLogger(),

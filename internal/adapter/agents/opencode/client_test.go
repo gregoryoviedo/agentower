@@ -1,4 +1,4 @@
-package opencode_test
+package agents_opencode_test
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 )
 
 func TestClientUsesOpenCodeAPI(t *testing.T) {
@@ -32,7 +32,7 @@ func TestClientUsesOpenCodeAPI(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := opencode.NewClient(server.URL, nil)
+	client, err := agents_opencode.NewClient(server.URL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestClientSendPromptReturnsAssistantText(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
+	client, err := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestClientRevertPicksLastUserMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
+	client, err := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

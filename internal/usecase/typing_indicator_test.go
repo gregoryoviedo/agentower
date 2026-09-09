@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
 	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/domain"
@@ -81,7 +81,7 @@ func TestHandleTextEmitsTypingWhilePromptRuns(t *testing.T) {
 	}
 	defer store.Close()
 
-	client, err := opencode.NewClient(server.URL, &http.Client{Timeout: 5 * time.Second})
+	client, err := agents_opencode.NewClient(server.URL, &http.Client{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestHandleTextWithoutNotifierIsSafe(t *testing.T) {
 	browser, _ := NewWorkspaceBrowser(workspace.OSFileSystem{}, root)
 	store, _ := sqlite.Open(statePathForTest(t))
 	defer store.Close()
-	client, _ := opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
+	client, _ := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
 
 	handler := NewHandler(NewNavigationService(browser, store), store, client, &localFakeServer{started: true}, browser)
 	// Intentionally do NOT call SetNotifier — the handler must remain

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
 	"github.com/gregoryoviedo/agentower/internal/domain"
 )
@@ -78,7 +78,7 @@ func TestSessionWatcherMarksIdleSessionAsCompleted(t *testing.T) {
 	}
 	defer store.Close()
 
-	client, err := opencode.NewClient(server.URL, &http.Client{Timeout: 5 * time.Second})
+	client, err := agents_opencode.NewClient(server.URL, &http.Client{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestSessionWatcherDoesNotRecordWhileStreaming(t *testing.T) {
 
 	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
 	defer store.Close()
-	client, _ := opencode.NewClient(server.URL, &http.Client{Timeout: 5 * time.Second})
+	client, _ := agents_opencode.NewClient(server.URL, &http.Client{Timeout: 5 * time.Second})
 	pub := &recordingCompletionPublisher{}
 	watcher := NewSessionWatcher(client, store, store, pub, SessionWatcherOptions{
 		PollInterval:  10 * time.Millisecond,

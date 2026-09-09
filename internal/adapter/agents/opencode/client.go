@@ -1,4 +1,4 @@
-package opencode
+package agents_opencode
 
 import (
 	"bytes"
@@ -122,6 +122,24 @@ func NewClient(baseURL string, httpClient *http.Client) (*Client, error) {
 		prompt:  promptClient,
 	}, nil
 }
+
+// Kind identifies this adapter as the opencode one. The registry uses
+// it to route commands and the Telegram picker renders it next to the
+// other agent labels.
+func (c *Client) Kind() domain.AgentKind { return domain.AgentOpenCode }
+
+// DisplayName is the human-readable label the Telegram picker and
+// the macOS Settings show for this adapter.
+func (c *Client) DisplayName() string { return "opencode" }
+
+// Compile-time guarantee that the opencode client satisfies the
+// multi-agent port. The registry will pick it up via this assertion.
+var _ domain.AgentAdapter = (*Client)(nil)
+
+// legacyClient is preserved so existing callers that depend on the
+// opencode-only methods can keep using them. It is just a type alias
+// kept around during the migration; commit 4 removes it.
+type legacyClient = Client
 
 func (c *Client) Health(ctx context.Context) (domain.HealthStatus, error) {
 	var response struct {

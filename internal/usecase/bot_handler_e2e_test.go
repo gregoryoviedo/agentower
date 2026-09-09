@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
 	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/domain"
@@ -68,7 +68,7 @@ func TestEndToEndSelectsProjectThenPrompt(t *testing.T) {
 	}
 	defer store.Close()
 
-	opencodeClient, err := opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
+	opencodeClient, err := agents_opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestHandlerIgnoresForeignChat(t *testing.T) {
 	browser, _ := usecase.NewWorkspaceBrowser(workspace.OSFileSystem{}, root)
 	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
 	defer store.Close()
-	client, _ := opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
+	client, _ := agents_opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
 
 	navigation := usecase.NewNavigationService(browser, store)
 	handler := usecase.NewHandler(navigation, store, client, &fakeServer{}, browser)

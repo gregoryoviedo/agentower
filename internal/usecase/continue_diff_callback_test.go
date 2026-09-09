@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gregoryoviedo/agentower/internal/adapter/opencode"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
 	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/domain"
@@ -36,7 +36,7 @@ func TestHandlerContinueAndDiffCallbacks(t *testing.T) {
 	browser, _ := usecase.NewWorkspaceBrowser(workspace.OSFileSystem{}, root)
 	store, _ := sqlite.Open(t.TempDir() + "/state.db")
 	defer store.Close()
-	client, _ := opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
+	client, _ := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
 
 	handler := usecase.NewHandler(usecase.NewNavigationService(browser, store), store, client, &fakeServer{started: true}, browser)
 	handler.SetSessionEventLog(store)
