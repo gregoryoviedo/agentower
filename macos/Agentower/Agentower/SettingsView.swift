@@ -18,12 +18,17 @@ struct SettingsView: View {
     @State private var telegramAPIRoot: String = ""
     @State private var telegramProxyURL: String = ""
 
+    @State private var agentRows: [AgentRow] = []
+
     @State private var loginItemEnabled: Bool = true
     @State private var savedAt: Date?
     @State private var errorMessage: String?
 
     @FocusState private var focusedField: Field?
-    private enum Field: Hashable { case workspaceRoot, token, chatID, port, bin, statePath, apiRoot, proxyURL }
+    private enum Field: Hashable {
+        case workspaceRoot, token, chatID, port, bin, statePath, apiRoot, proxyURL
+        case agentBin(Int), agentArgs(Int)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -52,41 +57,9 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Servidor OpenCode") {
-                    Stepper(value: $openCodePort, in: 1...65535) {
-                        HStack {
-                            Text("OPENCODE_PORT")
-                            Spacer()
-                            Text("\(openCodePort)")
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                    }
-                    LabeledContent("OPENCODE_BIN") {
-                        TextField("opencode", text: $openCodeBin)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($focusedField, equals: .bin)
-                    }
-                    Toggle("OPENCODE_AUTOSTART", isOn: $openCodeAutostart)
-                }
-
-                Section("Avanzado (opcional)") {
-                    LabeledContent("AGENTOWER_STATE_PATH") {
-                        TextField("(por defecto junto a WORKSPACE_ROOT)", text: $agentowerStatePath)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($focusedField, equals: .statePath)
-                    }
-                    LabeledContent("TELEGRAM_API_ROOT") {
-                        TextField("(por defecto de telebot)", text: $telegramAPIRoot)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($focusedField, equals: .apiRoot)
-                    }
-                    LabeledContent("TELEGRAM_PROXY_URL") {
-                        TextField("http://host:port", text: $telegramProxyURL)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($focusedField, equals: .proxyURL)
-                    }
-                }
+                agentsSection
+                opencodeBackCompatSection
+                advancedSection
 
                 Section("Inicio de sesión") {
                     Toggle("Iniciar Agentower al arrancar macOS", isOn: $loginItemEnabled)
@@ -99,7 +72,7 @@ struct SettingsView: View {
                 }
             }
             .formStyle(.grouped)
-            .frame(minWidth: 520, minHeight: 480)
+            .frame(minWidth: 560, minHeight: 580)
 
             Divider()
             HStack {
@@ -130,38 +103,140 @@ struct SettingsView: View {
         .onAppear { load() }
     }
 
-    private func load() {
-        let cfg = appState.configuration
-        workspaceRoot = cfg.workspaceRoot
-        telegramBotToken = cfg.telegramBotToken
-        allowedChatID = cfg.allowedChatID
-        openCodePort = cfg.openCodePort
-        openCodeBin = cfg.openCodeBin
-        openCodeAutostart = cfg.openCodeAutostart
-        agentowerStatePath = cfg.agentowerStatePath
-        telegramAPIRoot = cfg.telegramAPIRoot
-        telegramProxyURL = cfg.telegramProxyURL
-        loginItemEnabled = true
+    // MARK: - Sections
+
+    private var agentsSection: some View {
+        Section("Agentes de IA") {
+            ForEach($agentRows) { $row in
+                agentRow(row: $row)
+            }
+            HStack {
+                Text("Detecta los binarios en PATH y permite habilitar cada agente desde Telegram con /agents.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Reintentar detección") { runDetection() }
+            }
+        }
     }
 
-    private func pickWorkspace() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Elegir"
-        panel.message = "Elige el WORKSPACE_ROOT"
-        if panel.runModal() == .OK, let url = panel.url {
-            workspaceRoot = url.path
+    @ViewBuilder
+    private func agentRow(row: Binding<AgentRow>) -> some View {
+        let kind = row.wrappedValue.kind
+        let label = ConfigStore.displayName(for: kind)
+        let disabled = !row.wrappedValue.available
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Toggle("Habilitado", isOn: row.enabled)
+                    .disabled(disabled)
+                Spacer()
+                if disabled {
+                    Text(disableReason(for: row.wrappedValue))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            LabeledContent("\(label.uppercased())_BIN") {
+                TextField(kind, text: row.bin)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(disabled)
+                    .focused($focusedField, equals: .agentBin(row.wrappedValue.id))
+                    .onPasteCommand(of: [UTType.text]) { handleAgentPaste(row: row.wrappedValue.id, providers: $0) }
+            }
+            HStack {
+                Stepper(value: row.port, in: 1...65535) {
+                    HStack {
+                        Text("\(label.uppercased())_PORT")
+                        Spacer()
+                        Text("\(row.wrappedValue.port)")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+                .disabled(disabled)
+            }
+            LabeledContent("\(label.uppercased())_ARGS") {
+                TextField("argumentos extra", text: row.args)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(disabled)
+                    .focused($focusedField, equals: .agentArgs(row.wrappedValue.id))
+                    .onPasteCommand(of: [UTType.text]) { handleAgentPaste(row: row.wrappedValue.id, providers: $0) }
+            }
+        }
+        .padding(.vertical, 4)
+        .opacity(disabled ? 0.6 : 1.0)
+    }
+
+    private var opencodeBackCompatSection: some View {
+        Section("Servidor OpenCode (legacy)") {
+            Stepper(value: $openCodePort, in: 1...65535) {
+                HStack {
+                    Text("OPENCODE_PORT")
+                    Spacer()
+                    Text("\(openCodePort)")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            LabeledContent("OPENCODE_BIN") {
+                TextField("opencode", text: $openCodeBin)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .bin)
+                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .bin, providers: $0) }
+            }
+            Toggle("OPENCODE_AUTOSTART", isOn: $openCodeAutostart)
+            Text("Estos campos se mantienen por compatibilidad con .env antiguos; los nuevos valores viven en la sección Agentes de IA.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var advancedSection: some View {
+        Section("Avanzado (opcional)") {
+            LabeledContent("AGENTOWER_STATE_PATH") {
+                TextField("(por defecto junto a WORKSPACE_ROOT)", text: $agentowerStatePath)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .statePath)
+                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .statePath, providers: $0) }
+            }
+            LabeledContent("TELEGRAM_API_ROOT") {
+                TextField("(por defecto de telebot)", text: $telegramAPIRoot)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .apiRoot)
+                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .apiRoot, providers: $0) }
+            }
+            LabeledContent("TELEGRAM_PROXY_URL") {
+                TextField("http://host:port", text: $telegramProxyURL)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .proxyURL)
+                    .onPasteCommand(of: [UTType.text]) { handlePaste(into: .proxyURL, providers: $0) }
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func disableReason(for row: AgentRow) -> String {
+        if row.detectedPath == nil {
+            return "Próximamente — binario no encontrado"
+        }
+        return "Próximamente"
+    }
+
+    private func runDetection() {
+        let detected = ConfigStore.detectAgentsInPath()
+        for index in agentRows.indices {
+            let kind = agentRows[index].kind
+            if let path = detected[kind] {
+                agentRows[index].detectedPath = path
+                if agentRows[index].bin == kind {
+                    agentRows[index].bin = path
+                }
+            }
         }
     }
 
     private func handlePaste(into field: Field, providers: [NSItemProvider]) {
-        // SwiftUI suppresses the default paste action when .onPasteCommand
-        // is attached, so without a fallback a SecureField or a TextField
-        // that yields no NSItemProvider simply does nothing on cmd+v.
-        // We try the providers first (drag & drop, programmatic paste) and
-        // fall back to NSPasteboard.general so cmd+v always works.
         if let provider = providers.first {
             provider.loadObject(ofClass: NSString.self) { [weak self] obj, _ in
                 let resolved = (obj as? NSString) as String?
@@ -176,6 +251,29 @@ struct SettingsView: View {
         }
         if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
             applyPaste(text, to: field)
+        }
+    }
+
+    private func handleAgentPaste(row id: Int, providers: [NSItemProvider]) {
+        guard let index = agentRows.firstIndex(where: { $0.id == id }) else { return }
+        let closure: (String) -> Void = { text in
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                agentRows[index].bin = trimmed
+            }
+        }
+        if let provider = providers.first {
+            provider.loadObject(ofClass: NSString.self) { obj, _ in
+                let text = (obj as? NSString) as String?
+                    ?? NSPasteboard.general.string(forType: .string)
+                    ?? ""
+                guard !text.isEmpty else { return }
+                DispatchQueue.main.async { closure(text) }
+            }
+            return
+        }
+        if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
+            closure(text)
         }
     }
 
@@ -203,6 +301,43 @@ struct SettingsView: View {
             telegramAPIRoot = text.trimmingCharacters(in: .whitespacesAndNewlines)
         case .proxyURL:
             telegramProxyURL = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .agentBin, .agentArgs:
+            break
+        }
+    }
+
+    private func load() {
+        let cfg = appState.configuration
+        workspaceRoot = cfg.workspaceRoot
+        telegramBotToken = cfg.telegramBotToken
+        allowedChatID = cfg.allowedChatID
+        openCodePort = cfg.openCodePort
+        openCodeBin = cfg.openCodeBin
+        openCodeAutostart = cfg.openCodeAutostart
+        agentowerStatePath = cfg.agentowerStatePath
+        telegramAPIRoot = cfg.telegramAPIRoot
+        telegramProxyURL = cfg.telegramProxyURL
+        loginItemEnabled = true
+        rebuildAgentRows(from: cfg)
+        runDetection()
+    }
+
+    private func rebuildAgentRows(from cfg: BotConfiguration) {
+        let detected = ConfigStore.detectAgentsInPath()
+        agentRows = ConfigStore.agentKinds.enumerated().map { index, kind in
+            let stored = cfg.agents[kind] ?? AgentSettings()
+            let detectedPath = detected[kind]
+            let available = kind == "opencode" || detectedPath != nil
+            return AgentRow(
+                id: index,
+                kind: kind,
+                enabled: stored.enabled,
+                bin: stored.bin.isEmpty ? (detectedPath ?? kind) : stored.bin,
+                port: stored.port == 0 ? ConfigStore.defaultPort(for: kind) : stored.port,
+                args: stored.args,
+                available: available,
+                detectedPath: detectedPath
+            )
         }
     }
 
@@ -221,6 +356,17 @@ struct SettingsView: View {
         if cfg.openCodeBin.isEmpty {
             cfg.openCodeBin = "opencode"
         }
+        var agentsMap: [String: AgentSettings] = [:]
+        for row in agentRows {
+            agentsMap[row.kind] = AgentSettings(
+                enabled: row.enabled,
+                bin: row.bin.trimmingCharacters(in: .whitespacesAndNewlines),
+                port: row.port,
+                args: row.args.trimmingCharacters(in: .whitespacesAndNewlines),
+                available: row.available
+            )
+        }
+        cfg.agents = agentsMap
         if let msg = cfg.validationMessage {
             errorMessage = msg
             savedAt = nil
@@ -244,4 +390,17 @@ struct SettingsView: View {
             savedAt = nil
         }
     }
+}
+
+/// AgentRow is the SwiftUI-side mirror of AgentSettings, indexed so
+/// ForEach can identify each row without relying on the String key.
+struct AgentRow: Identifiable, Equatable {
+    let id: Int
+    var kind: String
+    var enabled: Bool
+    var bin: String
+    var port: Int
+    var args: String
+    var available: Bool
+    var detectedPath: String?
 }
