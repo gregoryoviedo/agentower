@@ -38,7 +38,7 @@ func TestHandlerContinueAndDiffCallbacks(t *testing.T) {
 	defer store.Close()
 	client, _ := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
 
-	handler := usecase.NewHandler(usecase.NewNavigationService(browser, store), store, client, &fakeServer{started: true}, browser)
+	handler := usecase.NewHandler(usecase.NewNavigationService(browser, store), store, &fakeRegistry{client: client}, &fakeServer{started: true}, browser)
 	handler.SetSessionEventLog(store)
 
 	const chatID = 42

@@ -243,8 +243,12 @@ func buildCompletionResponse(chatID int64, snap *domain.CompletedSession) domain
 	if preview == "" {
 		preview = "Agentower terminó sin previsualización."
 	}
+	agentLabel := "agente"
+	if snap.AgentKind != "" {
+		agentLabel = string(snap.AgentKind)
+	}
 	var b strings.Builder
-	b.WriteString("✅ Tarea completada\n\n")
+	b.WriteString("✅ Tarea completada en " + agentLabel + "\n\n")
 	if project != "" {
 		b.WriteString("Proyecto: `" + project + "`\n")
 	}

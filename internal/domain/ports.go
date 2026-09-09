@@ -102,6 +102,9 @@ type AgentRegistry interface {
 	// Available returns only the descriptors whose adapter is fully
 	// implemented and the binary is detected.
 	Available() []AgentDescriptor
+	// DescriptorFor returns the descriptor for a single kind so the
+	// caller can render a specific card or reason about its state.
+	DescriptorFor(kind AgentKind) (AgentDescriptor, bool)
 	// Get returns the adapter for the given kind. ErrAgentUnavailable
 	// if the kind is not Available; ErrAgentCapabilitiesLimited if the
 	// caller invoked an unsupported method on a partial adapter.

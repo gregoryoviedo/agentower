@@ -18,20 +18,57 @@ import (
 	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
 
-// fakeServer satisfies domain.OpenCodeServerManager without spawning anything.
+// fakeServer satisfies domain.AgentServerManager without spawning anything.
 type fakeServer struct {
 	started bool
 	cwd     string
 }
 
-func (f *fakeServer) Start(_ context.Context, workingDir string) error {
+func (f *fakeServer) Start(_ context.Context, _ domain.AgentKind, workingDir string) error {
 	f.started = true
 	f.cwd = workingDir
 	return nil
 }
-func (f *fakeServer) Stop()                   { f.started = false; f.cwd = "" }
-func (f *fakeServer) StartedSubprocess() bool { return f.started }
-func (f *fakeServer) WorkingDir() string      { return f.cwd }
+func (f *fakeServer) Stop(_ domain.AgentKind) { f.started = false; f.cwd = "" }
+func (f *fakeServer) StopAll()                { f.started = false; f.cwd = "" }
+func (f *fakeServer) StartedSubprocess(_ domain.AgentKind) bool {
+	return f.started
+}
+func (f *fakeServer) OwnsSubprocess(_ domain.AgentKind) bool { return f.started }
+func (f *fakeServer) WorkingDir(_ domain.AgentKind) string  { return f.cwd }
+
+// fakeRegistry wraps an opencode client as the single Available agent.
+type fakeRegistry struct{ client domain.AgentAdapter }
+
+func (r *fakeRegistry) Descriptors() []domain.AgentDescriptor {
+	return []domain.AgentDescriptor{{
+		Kind: domain.AgentOpenCode, DisplayName: "opencode", Bin: "opencode",
+		Detected: true, Available: true, Port: 4096,
+		Capabilities: domain.AgentCapabilities{
+			Health: true, ListProjects: true, ListSessions: true, CreateSession: true,
+			SendPrompt: true, Revert: true, FileStatus: true, ListMessages: true,
+		},
+	}}
+}
+func (r *fakeRegistry) Available() []domain.AgentDescriptor { return r.Descriptors() }
+func (r *fakeRegistry) DescriptorFor(k domain.AgentKind) (domain.AgentDescriptor, bool) {
+	for _, d := range r.Descriptors() {
+		if d.Kind == k {
+			return d, true
+		}
+	}
+	return domain.AgentDescriptor{}, false
+}
+func (r *fakeRegistry) Get(k domain.AgentKind) (domain.AgentAdapter, error) {
+	if k != domain.AgentOpenCode {
+		return nil, domain.ErrAgentUnavailable
+	}
+	return r.client, nil
+}
+func (r *fakeRegistry) Active(_ int64) (domain.AgentKind, error) { return domain.AgentOpenCode, nil }
+func (r *fakeRegistry) SetActive(_ int64, _ domain.AgentKind) error {
+	return nil
+}
 
 func TestEndToEndSelectsProjectThenPrompt(t *testing.T) {
 	root := t.TempDir()
@@ -75,7 +112,7 @@ func TestEndToEndSelectsProjectThenPrompt(t *testing.T) {
 
 	fake := &fakeServer{started: true}
 	navigation := usecase.NewNavigationService(browser, store)
-	handler := usecase.NewHandler(navigation, store, opencodeClient, fake, browser)
+	handler := usecase.NewHandler(navigation, store, &fakeRegistry{client: opencodeClient}, fake, browser)
 	ctx := context.Background()
 
 	state, entries, err := navigation.Start(ctx, 42)
@@ -129,7 +166,7 @@ func TestHandlerIgnoresForeignChat(t *testing.T) {
 	client, _ := agents_opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
 
 	navigation := usecase.NewNavigationService(browser, store)
-	handler := usecase.NewHandler(navigation, store, client, &fakeServer{}, browser)
+	handler := usecase.NewHandler(navigation, store, &fakeRegistry{client: client}, &fakeServer{}, browser)
 	ctx := context.Background()
 
 	state, _, err := navigation.Start(ctx, 42)

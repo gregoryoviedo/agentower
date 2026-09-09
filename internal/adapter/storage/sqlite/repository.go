@@ -144,6 +144,34 @@ func (r *Repository) ListEnabledAgents(_ context.Context) (map[domain.AgentKind]
 	return map[domain.AgentKind]bool{}, nil
 }
 
+// CountLegacySessions returns the number of rows in runtime_state
+// whose agent_kind is the empty string. With the DEFAULT 'opencode'
+// in the schema this should be zero on fresh installs, but historic
+// databases upgraded via the PR-1 migration can have empty values
+// until /agents migrate runs once.
+func (r *Repository) CountLegacySessions(ctx context.Context) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_state WHERE agent_kind = ''`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count legacy sessions: %w", err)
+	}
+	return n, nil
+}
+
+// MarkLegacySessionsAsOpenCode rewrites every empty agent_kind row to
+// 'opencode'. Returns the affected count.
+func (r *Repository) MarkLegacySessionsAsOpenCode(ctx context.Context) (int, error) {
+	res, err := r.db.ExecContext(ctx, `UPDATE runtime_state SET agent_kind = 'opencode' WHERE agent_kind = ''`)
+	if err != nil {
+		return 0, fmt.Errorf("mark legacy sessions as opencode: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(n), nil
+}
+
 func (r *Repository) SaveNavigation(ctx context.Context, state domain.NavigationState) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO directory_navigation (id, chat_id, current_relative_path, expires_at, created_at)

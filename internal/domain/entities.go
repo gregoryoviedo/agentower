@@ -93,6 +93,7 @@ type CompletedSession struct {
 	Directory   string
 	Title       string
 	Preview     string
+	AgentKind   AgentKind
 	CompletedAt time.Time
 	NotifiedAt  time.Time
 }

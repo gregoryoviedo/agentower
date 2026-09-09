@@ -34,22 +34,59 @@ func (r *recordingNotifier) SendResponse(_ context.Context, _ int64, _ domain.Bo
 	return nil
 }
 
-// localFakeServer is a minimal OpenCodeServerManager used by tests inside
-// the usecase package (bot_handler_e2e_test.go defines its own copy inside
-// the _test external package and cannot be shared).
+// localFakeServer is a minimal AgentServerManager used by tests inside
+// the usecase package. It tracks one fake subprocess per kind.
 type localFakeServer struct {
 	started bool
 	cwd     string
 }
 
-func (f *localFakeServer) Start(_ context.Context, workingDir string) error {
+func (f *localFakeServer) Start(_ context.Context, _ domain.AgentKind, workingDir string) error {
 	f.started = true
 	f.cwd = workingDir
 	return nil
 }
-func (f *localFakeServer) Stop()                   { f.started = false; f.cwd = "" }
-func (f *localFakeServer) StartedSubprocess() bool { return f.started }
-func (f *localFakeServer) WorkingDir() string      { return f.cwd }
+func (f *localFakeServer) Stop(_ domain.AgentKind)    { f.started = false; f.cwd = "" }
+func (f *localFakeServer) StopAll()                   { f.started = false; f.cwd = "" }
+func (f *localFakeServer) StartedSubprocess(_ domain.AgentKind) bool {
+	return f.started
+}
+func (f *localFakeServer) OwnsSubprocess(_ domain.AgentKind) bool { return f.started }
+func (f *localFakeServer) WorkingDir(_ domain.AgentKind) string  { return f.cwd }
+
+// localRegistry adapts an opencode client to the multi-agent AgentRegistry
+// for tests that only need a single opencode slot.
+type localRegistry struct {
+	client domain.AgentAdapter
+}
+
+func (r *localRegistry) Descriptors() []domain.AgentDescriptor {
+	return []domain.AgentDescriptor{{
+		Kind: domain.AgentOpenCode, DisplayName: "opencode", Bin: "opencode",
+		Detected: true, Available: true, Port: 4096,
+		Capabilities: domain.AgentCapabilities{
+			Health: true, ListProjects: true, ListSessions: true, CreateSession: true,
+			SendPrompt: true, Revert: true, FileStatus: true, ListMessages: true,
+		},
+	}}
+}
+func (r *localRegistry) Available() []domain.AgentDescriptor { return r.Descriptors() }
+func (r *localRegistry) DescriptorFor(k domain.AgentKind) (domain.AgentDescriptor, bool) {
+	for _, d := range r.Descriptors() {
+		if d.Kind == k {
+			return d, true
+		}
+	}
+	return domain.AgentDescriptor{}, false
+}
+func (r *localRegistry) Get(k domain.AgentKind) (domain.AgentAdapter, error) {
+	if k != domain.AgentOpenCode {
+		return nil, domain.ErrAgentUnavailable
+	}
+	return r.client, nil
+}
+func (r *localRegistry) Active(_ int64) (domain.AgentKind, error)   { return domain.AgentOpenCode, nil }
+func (r *localRegistry) SetActive(_ int64, _ domain.AgentKind) error { return nil }
 
 func TestHandleTextEmitsTypingWhilePromptRuns(t *testing.T) {
 	root := t.TempDir()
@@ -87,7 +124,7 @@ func TestHandleTextEmitsTypingWhilePromptRuns(t *testing.T) {
 	}
 
 	notifier := &recordingNotifier{}
-	handler := NewHandler(NewNavigationService(browser, store), store, client, &localFakeServer{started: true}, browser)
+	handler := NewHandler(NewNavigationService(browser, store), store, &localRegistry{client: client}, &localFakeServer{started: true}, browser)
 	handler.SetNotifier(notifier)
 
 	if err := store.SaveRuntimeState(context.Background(), domain.RuntimeState{WorkspaceRoot: root, SessionID: "s1"}); err != nil {
@@ -137,7 +174,7 @@ func TestHandleTextWithoutNotifierIsSafe(t *testing.T) {
 	defer store.Close()
 	client, _ := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
 
-	handler := NewHandler(NewNavigationService(browser, store), store, client, &localFakeServer{started: true}, browser)
+	handler := NewHandler(NewNavigationService(browser, store), store, &localRegistry{client: client}, &localFakeServer{started: true}, browser)
 	// Intentionally do NOT call SetNotifier — the handler must remain
 	// safe to use without a typing notifier wired up.
 	_ = store.SaveRuntimeState(context.Background(), domain.RuntimeState{WorkspaceRoot: root, SessionID: "s1"})

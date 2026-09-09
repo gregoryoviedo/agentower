@@ -13,21 +13,25 @@ import (
 	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
 
-// recordingServer satisfies domain.OpenCodeServerManager and remembers every
+// recordingServer satisfies domain.AgentServerManager and remembers every
 // working directory Start was invoked with.
 type recordingServer struct {
 	started   bool
 	startedAt []string
 }
 
-func (r *recordingServer) Start(_ context.Context, workingDir string) error {
+func (r *recordingServer) Start(_ context.Context, _ domain.AgentKind, workingDir string) error {
 	r.started = true
 	r.startedAt = append(r.startedAt, workingDir)
 	return nil
 }
-func (r *recordingServer) Stop()                   { r.started = false }
-func (r *recordingServer) StartedSubprocess() bool { return r.started }
-func (r *recordingServer) WorkingDir() string {
+func (r *recordingServer) Stop(_ domain.AgentKind)    { r.started = false }
+func (r *recordingServer) StopAll()                   { r.started = false }
+func (r *recordingServer) StartedSubprocess(_ domain.AgentKind) bool {
+	return r.started
+}
+func (r *recordingServer) OwnsSubprocess(_ domain.AgentKind) bool { return r.started }
+func (r *recordingServer) WorkingDir(_ domain.AgentKind) string {
 	if len(r.startedAt) == 0 {
 		return ""
 	}
@@ -61,9 +65,22 @@ func newInitFixture(t *testing.T, layout []string) (string, *usecase.Handler, *r
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	server := &recordingServer{}
-	handler := usecase.NewHandler(nil, store, nil, server, browser)
+	handler := usecase.NewHandler(nil, store, nilRegistry{}, server, browser)
 	return root, handler, server
 }
+
+// nilRegistry is a stub AgentRegistry used by tests that don't exercise
+// the agent flow (only the server-manager wiring).
+type nilRegistry struct{}
+
+func (nilRegistry) Descriptors() []domain.AgentDescriptor             { return nil }
+func (nilRegistry) Available() []domain.AgentDescriptor               { return nil }
+func (nilRegistry) DescriptorFor(domain.AgentKind) (domain.AgentDescriptor, bool) {
+	return domain.AgentDescriptor{}, false
+}
+func (nilRegistry) Get(domain.AgentKind) (domain.AgentAdapter, error) { return nil, domain.ErrNoActiveAgent }
+func (nilRegistry) Active(int64) (domain.AgentKind, error)            { return "", nil }
+func (nilRegistry) SetActive(int64, domain.AgentKind) error           { return nil }
 
 func TestInitWithRelativePathStartsServerInsideWorkspace(t *testing.T) {
 	root, handler, server := newInitFixture(t, []string{"work", "work/sub"})
@@ -76,8 +93,8 @@ func TestInitWithRelativePathStartsServerInsideWorkspace(t *testing.T) {
 		t.Fatalf("/init did not start the server; response=%q", resp.Text)
 	}
 	want := filepath.Join(root, "work", "sub")
-	if server.WorkingDir() != want {
-		t.Fatalf("server cwd = %q, want %q", server.WorkingDir(), want)
+	if server.WorkingDir(domain.AgentOpenCode) != want {
+		t.Fatalf("server cwd = %q, want %q", server.WorkingDir(domain.AgentOpenCode), want)
 	}
 	if !strings.Contains(resp.Text, want) {
 		t.Fatalf("/init response should mention the working dir, got %q", resp.Text)
@@ -110,7 +127,7 @@ func TestInitRejectsPathEscapesViaDotDot(t *testing.T) {
 			t.Fatalf("/init %q err: %v", arg, err)
 		}
 		if server.started {
-			t.Fatalf("/init %q must not escape the workspace; got cwd=%q", arg, server.WorkingDir())
+			t.Fatalf("/init %q must not escape the workspace; got cwd=%q", arg, server.WorkingDir(domain.AgentOpenCode))
 		}
 		if resp.Text == "" {
 			t.Fatalf("/init %q returned empty response", arg)
@@ -136,8 +153,8 @@ func TestInitWithoutArgsUsesSavedRuntimeState(t *testing.T) {
 		t.Fatal("/init should have started the server")
 	}
 	want := filepath.Join(root, "work", "proj")
-	if server.WorkingDir() != want {
-		t.Fatalf("server cwd = %q, want %q", server.WorkingDir(), want)
+	if server.WorkingDir(domain.AgentOpenCode) != want {
+		t.Fatalf("server cwd = %q, want %q", server.WorkingDir(domain.AgentOpenCode), want)
 	}
 }
 
