@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/claude"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/codex"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/copilot"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/kiro"
 	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
@@ -81,6 +83,8 @@ func main() {
 	claudeManager := claude.NewManager("claude", agents.DefaultClaudePort)
 	codexManager := codex.NewManager("codex", agents.DefaultCodexPort)
 	kiroManager := kiro.NewManager("kiro", agents.DefaultKiroPort)
+	copilotDescriptor := findCopilotDescriptor(descriptors)
+	copilotManager := copilot.NewManager(copilotLaunchConfig(copilotDescriptor))
 
 	registry := agents.NewRegistry(agents.RegistryOptions{
 		Descriptors: descriptors,
@@ -107,6 +111,11 @@ func main() {
 			return kiro.NewAdapter(kiroManager), nil
 		})
 	}
+	if copilotDescriptor.Bin != "" {
+		registry.Register(domain.AgentCopilot, func() (domain.AgentAdapter, error) {
+			return copilot.NewAdapter(copilotManager), nil
+		})
+	}
 	if !opencodeDescriptor.Available {
 		// If opencode is missing we still expose the descriptor so the
 		// UI can show the Próximamente card, but the registry's
@@ -117,6 +126,7 @@ func main() {
 	_ = claudeManager // kept alive for the lifetime of the bot; sessions spawn on first use
 	_ = codexManager  // same: spawned per session on first use
 	_ = kiroManager   // same
+	_ = copilotManager // same: lazily dials the LSP server on first use
 
 	if cfg.AutoStart {
 		if err := serverManager.Start(stopContext, domain.AgentOpenCode, cfg.WorkspaceRoot); err != nil {
@@ -220,4 +230,34 @@ func hasDetectedKiro(descriptors []domain.AgentDescriptor) bool {
 		}
 	}
 	return false
+}
+
+// findCopilotDescriptor returns the copilot descriptor so we can pick
+// the right binary (CLI vs VS Code bundle) for the LSP launch config.
+func findCopilotDescriptor(descriptors []domain.AgentDescriptor) domain.AgentDescriptor {
+	for _, d := range descriptors {
+		if d.Kind == domain.AgentCopilot {
+			return d
+		}
+	}
+	return domain.AgentDescriptor{Kind: domain.AgentCopilot}
+}
+
+// copilotLaunchConfig returns the LaunchConfig that matches the
+// descriptor the detector reported. If the binary lives in PATH the
+// adapter spawns it directly via LaunchCLI; otherwise we assume the
+// path is a VS Code extension.js bundle and run it through node via
+// LaunchBundle.
+func copilotLaunchConfig(desc domain.AgentDescriptor) copilot.LaunchConfig {
+	if desc.Bin == "" {
+		return copilot.LaunchConfig{}
+	}
+	if isVSCodeCopilotBundle(desc.Bin) {
+		return copilot.LaunchConfig{Mode: copilot.LaunchBundle, Bin: "node", Bundle: desc.Bin}
+	}
+	return copilot.LaunchConfig{Mode: copilot.LaunchCLI, Bin: desc.Bin}
+}
+
+func isVSCodeCopilotBundle(path string) bool {
+	return strings.HasSuffix(path, "/dist/extension.js") || strings.Contains(path, ".vscode") && strings.HasSuffix(path, "extension.js")
 }

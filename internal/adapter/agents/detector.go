@@ -181,23 +181,36 @@ func (d *Detector) scanCopilot(ctx context.Context) domain.AgentDescriptor {
 		}
 	}
 	desc := domain.AgentDescriptor{
-		Kind:        domain.AgentCopilot,
-		DisplayName: "GitHub Copilot",
-		Bin:         bin,
-		Port:        DefaultCopilotPort,
-		Detected:    bin != "",
-		Available:   false, // PR-5 will flip this once the LSP adapter ships.
-		Capabilities: domain.AgentCapabilities{
-			Health:     true,
-			SendPrompt: true,
-		},
+		Kind:         domain.AgentCopilot,
+		DisplayName:  "GitHub Copilot",
+		Bin:          bin,
+		Port:         DefaultCopilotPort,
+		Detected:     bin != "",
+		Available:    bin != "", // PR-5: the LSP adapter ships today
+		Capabilities: copilotCapabilities(),
 	}
 	if bin == "" {
 		desc.Reason = "no se encontró copilot ni copilot-language-server en PATH ni en las extensiones de VS Code"
-	} else {
-		desc.Reason = "Próximamente (LSP)"
 	}
 	return desc
+}
+
+// copilotCapabilities lists what the LSP adapter supports today.
+// The upstream Copilot LSP does not expose stable endpoints for
+// ListSessions / ListMessages / Revert yet, so the adapter returns
+// ErrAgentCapabilitiesLimited for those and the Telegram UI hides
+// the corresponding buttons for copilot-driven chats.
+func copilotCapabilities() domain.AgentCapabilities {
+	return domain.AgentCapabilities{
+		Health:        true,
+		ListProjects:  false,
+		ListSessions:  false,
+		CreateSession: true,
+		SendPrompt:    true,
+		Revert:        false,
+		FileStatus:    true, // falls back to `git diff`
+		ListMessages:  false,
+	}
 }
 
 // findVSCodeCopilotBundle looks for the copilot extension bundle inside
