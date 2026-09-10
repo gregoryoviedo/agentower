@@ -166,12 +166,13 @@ func main() {
 	handler.SetActiveLocators(locators)
 	handler.SetStaleAfter(cfg.StaleAfter)
 
-	watcher := usecase.NewSessionWatcher(opencodeClient, repository, repository, publisher, usecase.SessionWatcherOptions{
+	watcher := usecase.NewSessionWatcher(registry, repository, repository, publisher, usecase.SessionWatcherOptions{
 		PollInterval:  5 * time.Second,
 		IdleThreshold: 30 * time.Second,
 		Logger:        logger.With("component", "session-watcher"),
 	})
 	handler.SetSessionController(watcher)
+	handler.SetCompletionPublisher(publisher)
 	go func() {
 		watcher.Run(stopContext)
 	}()

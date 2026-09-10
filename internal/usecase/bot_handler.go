@@ -30,6 +30,7 @@ type Handler struct {
 	watcher       SessionController
 	events        domain.SessionEventLog
 	snapshot      domain.SnapshotPublisher
+	completions   domain.CompletionPublisher
 	locators      domain.ActiveLocatorRegistry
 	workspaceRoot string
 	staleAfter    time.Duration
@@ -40,7 +41,7 @@ type Handler struct {
 // It is its own type so tests can supply a fake without dragging in the
 // full polling loop.
 type SessionController interface {
-	Watch(chatID int64, sessionID string)
+	Watch(chatID int64, kind domain.AgentKind, sessionID string)
 }
 
 // SetNotifier attaches a ChatNotifier (typically the Telegram adapter) that
@@ -76,6 +77,13 @@ func (h *Handler) SetSessionEventLog(log domain.SessionEventLog) { h.events = lo
 // SetSnapshotPublisher wires the in-process snapshot store so the handler
 // can mark notifications as pending whenever a prompt finishes.
 func (h *Handler) SetSnapshotPublisher(s domain.SnapshotPublisher) { h.snapshot = s }
+
+// SetCompletionPublisher wires the publisher the handler uses to
+// record completions for non-streaming agents (today: Copilot) at
+// the moment SendPrompt returns. The same concrete publisher is
+// shared with the SessionWatcher so the macOS wrapper sees one
+// unified completion stream regardless of which agent produced it.
+func (h *Handler) SetCompletionPublisher(p domain.CompletionPublisher) { h.completions = p }
 
 // SetActiveLocators wires the registry of SessionLocators the /continuar
 // command fans out to. Passing nil disables the command (it returns the
@@ -201,8 +209,9 @@ func (h *Handler) HandleText(ctx context.Context, chatID int64, text string) (do
 	reply, err := adapter.SendPrompt(ctx, state.SessionID, text)
 	stopTyping()
 	if h.watcher != nil {
-		h.watcher.Watch(chatID, state.SessionID)
+		h.watcher.Watch(chatID, kind, state.SessionID)
 	}
+	publishNonStreamCompletion(h, ctx, kind, chatID, state.SessionID, reply)
 	if h.snapshot != nil {
 		h.snapshot.SetActive(chatID, state.RelativePath, state.SessionID)
 	}
@@ -961,6 +970,68 @@ func humanizeSince(t, now time.Time) string {
 	}
 }
 
+// publishNonStreamCompletion records a CompletedSession for agents
+// that do not stream message history (today: GitHub Copilot via
+// LSP). For every other agent the SessionWatcher handles the
+// completion asynchronously so this is a no-op; we still call it
+// unconditionally to keep the handler uniform.
+func publishNonStreamCompletion(h *Handler, ctx context.Context, kind domain.AgentKind, chatID int64, sessionID, reply string) {
+	if h.completions == nil {
+		return
+	}
+	if !isInlineCompletionAgent(kind) {
+		return
+	}
+	if reply == "" {
+		// An empty reply means the LSP did not produce a
+		// completion (e.g. Copilot had no suggestion). We do not
+		// publish so the user is not paged for nothing.
+		return
+	}
+	preview := reply
+	if len(preview) > 240 {
+		preview = preview[:240] + "…"
+	}
+	projectName := ""
+	directory := ""
+	if h.state != nil {
+		if state, err := h.state.LoadRuntimeState(ctx); err == nil {
+			directory = state.WorkspaceRoot
+			projectName = filepath.Base(state.WorkspaceRoot)
+		}
+	}
+	snapshot := domain.CompletedSession{
+		ChatID:      chatID,
+		SessionID:   sessionID,
+		AgentKind:   kind,
+		Directory:   directory,
+		ProjectName: projectName,
+		Preview:     preview,
+		CompletedAt: h.handlerNow().UTC(),
+	}
+	if h.events != nil {
+		// Best-effort: persist so /continue and /continuar
+		// can rehydrate even if the macOS wrapper missed the
+		// notification.
+		_ = h.events.SaveCompletedSession(ctx, snapshot)
+	}
+	h.completions.PublishCompletion(snapshot)
+}
+
+// isInlineCompletionAgent reports whether the agent's transport
+// delivers the response in a single inline reply (no streaming
+// message log). Today only GitHub Copilot fits: its LSP returns
+// `insertText` on the inlineCompletion call, so there is no
+// message history to tail. The check is kept as a switch so future
+// agents slot in without touching the call sites.
+func isInlineCompletionAgent(kind domain.AgentKind) bool {
+	switch kind {
+	case domain.AgentCopilot:
+		return true
+	}
+	return false
+}
+
 func (h *Handler) watch(ctx context.Context, chatID int64, args []string) (domain.BotResponse, error) {
 	if h.watcher == nil {
 		return domain.BotResponse{Text: "El observador de sesiones no está activo."}, nil
@@ -986,8 +1057,8 @@ func (h *Handler) watch(ctx context.Context, chatID int64, args []string) (domai
 	if chatID == 0 {
 		return domain.BotResponse{Text: "Chat no resuelto para esta orden."}, nil
 	}
-	h.watcher.Watch(chatID, target)
-	return domain.BotResponse{Text: fmt.Sprintf("Vigilando la sesión `%s`. Te aviso por Telegram cuando quede inactiva.", target)}, nil
+	h.watcher.Watch(chatID, kind, target)
+	return domain.BotResponse{Text: fmt.Sprintf("Vigilando la sesión `%s` en `%s`. Te aviso por Telegram cuando quede inactiva.", target, kind)}, nil
 }
 
 // agentCommand shows the picker for the chat. Same UI as the post-project

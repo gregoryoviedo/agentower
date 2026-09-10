@@ -72,6 +72,10 @@ func Open(path string) (*Repository, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateCompletedSessionAgent(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Repository{db: db}, nil
 }
 
@@ -81,36 +85,7 @@ func Open(path string) (*Repository, error) {
 // schemas so callers can invoke Open on every boot without paying for a
 // migration every time.
 func migrateAgentState(db *sql.DB) error {
-	ensureColumn := func(table, column, def string) error {
-		rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
-		if err != nil {
-			return fmt.Errorf("inspect %s: %w", table, err)
-		}
-		defer rows.Close()
-		hasColumn := false
-		for rows.Next() {
-			var cid int
-			var name, ctype string
-			var notnull, pk int
-			var dflt sql.NullString
-			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-				return fmt.Errorf("scan %s column: %w", table, err)
-			}
-			if name == column {
-				hasColumn = true
-				break
-			}
-		}
-		if hasColumn {
-			return nil
-		}
-		stmt := `ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` TEXT NOT NULL DEFAULT '` + def + `'`
-		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("add column %s.%s: %w", table, column, err)
-		}
-		return nil
-	}
-	if err := ensureColumn("runtime_state", "agent_kind", "opencode"); err != nil {
+	if err := ensureColumn(db, "runtime_state", "agent_kind", "opencode"); err != nil {
 		return err
 	}
 	_, err := db.Exec(`
@@ -125,6 +100,49 @@ func migrateAgentState(db *sql.DB) error {
 	`)
 	if err != nil {
 		return fmt.Errorf("create agent_state: %w", err)
+	}
+	return nil
+}
+
+// migrateCompletedSessionAgent adds the agent_kind column to the
+// completed_session table so /continue and /continuar can route the
+// snapshot back to the right adapter. Idempotent: existing rows
+// keep the default "opencode" so the historical UX is unchanged.
+func migrateCompletedSessionAgent(db *sql.DB) error {
+	return ensureColumn(db, "completed_session", "agent_kind", "opencode")
+}
+
+// ensureColumn applies a non-destructive ALTER TABLE that adds the
+// named column with the given default. It is shared by the
+// multi-agent migrations so both runtime_state.agent_kind and
+// completed_session.agent_kind can be added without duplicating
+// the table_info inspection.
+func ensureColumn(db *sql.DB, table, column, def string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+	hasColumn := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan %s column: %w", table, err)
+		}
+		if name == column {
+			hasColumn = true
+			break
+		}
+	}
+	if hasColumn {
+		return nil
+	}
+	stmt := `ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` TEXT NOT NULL DEFAULT '` + def + `'`
+	if _, err := db.Exec(stmt); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
 	}
 	return nil
 }
@@ -361,9 +379,13 @@ func (r *Repository) SaveCompletedSession(ctx context.Context, snapshot domain.C
 	if !snapshot.NotifiedAt.IsZero() {
 		notifiedAt = snapshot.NotifiedAt.UTC().Format(time.RFC3339Nano)
 	}
+	agentKind := string(snapshot.AgentKind)
+	if agentKind == "" {
+		agentKind = string(domain.AgentOpenCode)
+	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO completed_session (chat_id, session_id, project_id, project_name, directory, title, preview, completed_at, notified_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO completed_session (chat_id, session_id, project_id, project_name, directory, title, preview, completed_at, notified_at, agent_kind)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(chat_id) DO UPDATE SET
 			session_id = excluded.session_id,
 			project_id = excluded.project_id,
@@ -372,10 +394,11 @@ func (r *Repository) SaveCompletedSession(ctx context.Context, snapshot domain.C
 			title = excluded.title,
 			preview = excluded.preview,
 			completed_at = excluded.completed_at,
-			notified_at = CASE WHEN excluded.notified_at = '' THEN completed_session.notified_at ELSE excluded.notified_at END
+			notified_at = CASE WHEN excluded.notified_at = '' THEN completed_session.notified_at ELSE excluded.notified_at END,
+			agent_kind = excluded.agent_kind
 	`,
 		snapshot.ChatID, snapshot.SessionID, snapshot.ProjectID, snapshot.ProjectName,
-		snapshot.Directory, snapshot.Title, snapshot.Preview, completedAt, notifiedAt,
+		snapshot.Directory, snapshot.Title, snapshot.Preview, completedAt, notifiedAt, agentKind,
 	)
 	if err != nil {
 		return fmt.Errorf("save completed session: %w", err)
@@ -385,12 +408,12 @@ func (r *Repository) SaveCompletedSession(ctx context.Context, snapshot domain.C
 
 func (r *Repository) LoadCompletedSession(ctx context.Context, chatID int64) (domain.CompletedSession, bool, error) {
 	var snapshot domain.CompletedSession
-	var completedAt, notifiedAt string
+	var completedAt, notifiedAt, agentKind string
 	err := r.db.QueryRowContext(ctx, `
-		SELECT chat_id, session_id, project_id, project_name, directory, title, preview, completed_at, notified_at
+		SELECT chat_id, session_id, project_id, project_name, directory, title, preview, completed_at, notified_at, agent_kind
 		FROM completed_session WHERE chat_id = ?
 	`, chatID).Scan(&snapshot.ChatID, &snapshot.SessionID, &snapshot.ProjectID, &snapshot.ProjectName,
-		&snapshot.Directory, &snapshot.Title, &snapshot.Preview, &completedAt, &notifiedAt)
+		&snapshot.Directory, &snapshot.Title, &snapshot.Preview, &completedAt, &notifiedAt, &agentKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.CompletedSession{}, false, nil
 	}
@@ -405,6 +428,7 @@ func (r *Repository) LoadCompletedSession(ctx context.Context, chatID int64) (do
 			snapshot.NotifiedAt = t
 		}
 	}
+	snapshot.AgentKind = domain.AgentKind(agentKind)
 	return snapshot, true, nil
 }
 

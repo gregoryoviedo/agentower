@@ -27,16 +27,50 @@ func (r *recordingCompletionPublisher) PublishCompletion(snap domain.CompletedSe
 	r.last.Store(snap)
 }
 
+// singleAdapterRegistry satisfies domain.AgentRegistry with a single
+// opencode adapter. The session watcher test only cares about
+// dispatch, so the other methods return minimal stubs.
+type singleAdapterRegistry struct {
+	adapter domain.AgentAdapter
+}
+
+func (r *singleAdapterRegistry) Descriptors() []domain.AgentDescriptor {
+	return []domain.AgentDescriptor{{Kind: domain.AgentOpenCode, Available: true}}
+}
+func (r *singleAdapterRegistry) Available() []domain.AgentDescriptor { return r.Descriptors() }
+func (r *singleAdapterRegistry) DescriptorFor(k domain.AgentKind) (domain.AgentDescriptor, bool) {
+	if k != domain.AgentOpenCode {
+		return domain.AgentDescriptor{}, false
+	}
+	return r.Descriptors()[0], true
+}
+func (r *singleAdapterRegistry) Get(k domain.AgentKind) (domain.AgentAdapter, error) {
+	if k != domain.AgentOpenCode {
+		return nil, domain.ErrAgentUnavailable
+	}
+	return r.adapter, nil
+}
+func (r *singleAdapterRegistry) Active(_ int64) (domain.AgentKind, error) {
+	return domain.AgentOpenCode, nil
+}
+func (r *singleAdapterRegistry) SetActive(_ int64, _ domain.AgentKind) error { return nil }
+
 func TestSessionWatcherMarksIdleSessionAsCompleted(t *testing.T) {
 	var messageCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/global/health":
+		switch r.URL.Path {
+		case "/global/health":
 			_, _ = w.Write([]byte(`{"healthy":true,"version":"dev"}`))
-		case r.URL.Path == "/session" && r.Method == http.MethodGet:
-			_, _ = w.Write([]byte(`[{"id":"ses1","projectID":"p1","title":"Main","directory":"/tmp/work"}]`))
-		case r.URL.Path == "/session/ses1/message" && r.Method == http.MethodGet:
+		case "/session":
+			if r.Method == http.MethodGet {
+				_, _ = w.Write([]byte(`[{"id":"ses1","projectID":"p1","title":"Main","directory":"/tmp/work"}]`))
+			}
+		case "/session/ses1/message":
+			if r.Method != http.MethodGet {
+				http.NotFound(w, r)
+				return
+			}
 			count := messageCount.Add(1)
 			// Tick 1: 2 messages, last is assistant with a text part.
 			// Tick 2: 3 messages (a new user message arrives), last is
@@ -84,12 +118,11 @@ func TestSessionWatcherMarksIdleSessionAsCompleted(t *testing.T) {
 	}
 
 	pub := &recordingCompletionPublisher{}
-	clock := time.Now
-	watcher := NewSessionWatcher(client, store, store, pub, SessionWatcherOptions{
+	watcher := NewSessionWatcher(&singleAdapterRegistry{adapter: client}, store, store, pub, SessionWatcherOptions{
 		PollInterval:  10 * time.Millisecond,
 		IdleInterval:  10 * time.Millisecond,
 		IdleThreshold: 50 * time.Millisecond,
-		Clock:         clock,
+		Clock:         time.Now,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -101,7 +134,7 @@ func TestSessionWatcherMarksIdleSessionAsCompleted(t *testing.T) {
 		watcher.Run(ctx)
 	}()
 
-	watcher.Watch(42, "ses1")
+	watcher.Watch(42, domain.AgentOpenCode, "ses1")
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -127,6 +160,9 @@ func TestSessionWatcherMarksIdleSessionAsCompleted(t *testing.T) {
 	if last.Preview != "ahora dime tu" {
 		t.Fatalf("preview = %q, want %q", last.Preview, "ahora dime tu")
 	}
+	if last.AgentKind != domain.AgentOpenCode {
+		t.Fatalf("AgentKind = %q, want opencode", last.AgentKind)
+	}
 
 	snap, ok, err := store.LoadCompletedSession(context.Background(), 42)
 	if err != nil {
@@ -137,6 +173,9 @@ func TestSessionWatcherMarksIdleSessionAsCompleted(t *testing.T) {
 	}
 	if snap.SessionID != "ses1" {
 		t.Fatalf("snap.SessionID = %q, want ses1", snap.SessionID)
+	}
+	if snap.AgentKind != domain.AgentOpenCode {
+		t.Fatalf("persisted AgentKind = %q, want opencode", snap.AgentKind)
 	}
 }
 
@@ -166,7 +205,7 @@ func TestSessionWatcherDoesNotRecordWhileStreaming(t *testing.T) {
 	defer store.Close()
 	client, _ := agents_opencode.NewClient(server.URL, &http.Client{Timeout: 5 * time.Second})
 	pub := &recordingCompletionPublisher{}
-	watcher := NewSessionWatcher(client, store, store, pub, SessionWatcherOptions{
+	watcher := NewSessionWatcher(&singleAdapterRegistry{adapter: client}, store, store, pub, SessionWatcherOptions{
 		PollInterval:  10 * time.Millisecond,
 		IdleInterval:  10 * time.Millisecond,
 		IdleThreshold: 30 * time.Millisecond,
@@ -180,7 +219,7 @@ func TestSessionWatcherDoesNotRecordWhileStreaming(t *testing.T) {
 		defer close(done)
 		watcher.Run(ctx)
 	}()
-	watcher.Watch(42, "ses1")
+	watcher.Watch(42, domain.AgentOpenCode, "ses1")
 
 	time.Sleep(500 * time.Millisecond)
 	cancel()
@@ -188,5 +227,42 @@ func TestSessionWatcherDoesNotRecordWhileStreaming(t *testing.T) {
 
 	if got := pub.count.Load(); got != 0 {
 		t.Fatalf("publisher count = %d, want 0 (streaming should not record)", got)
+	}
+}
+
+// TestSessionWatcherSkipsCopilot confirms the watcher no-ops for
+// non-streaming agents. Copilot publishes its completion through
+// the handler, not the polling loop.
+func TestSessionWatcherSkipsCopilot(t *testing.T) {
+	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	defer store.Close()
+	pub := &recordingCompletionPublisher{}
+	// singleAdapterRegistry returns ErrAgentUnavailable for
+	// non-opencode kinds, so the watcher's tick would short-circuit
+	// on the registry lookup anyway. The point of this test is to
+	// prove the watcher never reaches the adapter: it must short
+	// before Get().
+	watcher := NewSessionWatcher(&singleAdapterRegistry{adapter: nil}, store, store, pub, SessionWatcherOptions{
+		PollInterval:  5 * time.Millisecond,
+		IdleInterval:  5 * time.Millisecond,
+		IdleThreshold: 5 * time.Millisecond,
+		Clock:         time.Now,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watcher.Run(ctx)
+	}()
+	watcher.Watch(42, domain.AgentCopilot, "ses_copilot")
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	if got := pub.count.Load(); got != 0 {
+		t.Fatalf("publisher count = %d, want 0 (copilot has no stream)", got)
 	}
 }
