@@ -2,7 +2,6 @@ package kiro_test
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -10,68 +9,103 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/kiro"
 	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
-// writeFakeKiroDB creates a state.vscdb at <root>/User/globalStorage/
-// kiro.kiroagent/default/state.vscdb with the supplied index blob
-// and per-session blobs. The function fails the test on any I/O
-// or SQL error.
-func writeFakeKiroDB(t *testing.T, root string, index map[string]any, perSession map[string]map[string]any) {
+// writeFakeKiroState lays down a minimal ~/.kiro/ tree under
+// <root>. The sessionIndex is written to
+// <root>/session-index/<workspaceHash>.jsonl; the matching
+// session.json + messages.jsonl go under
+// <root>/sessions/<workspaceHash>/<sessionID>/.
+//
+// The function returns the workspace hash the tests used so the
+// assertion side can build the same key.
+func writeFakeKiroState(t *testing.T, root, workspaceHash, sessionID string, session map[string]any, messages []map[string]any, indexLines []map[string]any) {
 	t.Helper()
-	dbDir := filepath.Join(root, "User", "globalStorage", "kiro.kiroagent", "default")
-	if err := os.MkdirAll(dbDir, 0o755); err != nil {
-		t.Fatal(err)
+	indexDir := filepath.Join(root, "session-index")
+	sessionDir := filepath.Join(root, "sessions", workspaceHash, sessionID)
+	for _, d := range []string{indexDir, sessionDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	dbPath := filepath.Join(dbDir, "state.vscdb")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)`); err != nil {
-		t.Fatal(err)
-	}
-	indexBlob, err := json.Marshal(index)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO ItemTable (key, value) VALUES (?, ?)`, "chat.ChatSessionStore.index", indexBlob); err != nil {
-		t.Fatal(err)
-	}
-	for id, doc := range perSession {
-		blob, err := json.Marshal(doc)
+	if session != nil {
+		raw, err := json.Marshal(session)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO ItemTable (key, value) VALUES (?, ?)`, "chat.ChatSessionStore."+id, blob); err != nil {
+		if err := os.WriteFile(filepath.Join(sessionDir, "session.json"), raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if messages != nil {
+		lines := make([][]byte, 0, len(messages))
+		for _, m := range messages {
+			raw, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, raw)
+		}
+		if err := os.WriteFile(filepath.Join(sessionDir, "messages.jsonl"), joinLines(lines), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if indexLines != nil {
+		lines := make([][]byte, 0, len(indexLines))
+		for _, l := range indexLines {
+			raw, err := json.Marshal(l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, raw)
+		}
+		if err := os.WriteFile(filepath.Join(indexDir, workspaceHash+".jsonl"), joinLines(lines), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
+func joinLines(lines [][]byte) []byte {
+	total := 0
+	for _, l := range lines {
+		total += len(l) + 1
+	}
+	out := make([]byte, 0, total)
+	for _, l := range lines {
+		out = append(out, l...)
+		out = append(out, '\n')
+	}
+	return out
+}
+
 func TestSessionLocatorPicksFreshestFromIndex(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	index := map[string]any{
-		"version": 1,
-		"entries": map[string]any{
-			"sess_old": map[string]any{
-				"title":           "old chat",
-				"workspacePath":   "/Users/me/old-proj",
-				"lastMessageDate": now.Add(-2 * time.Hour).Format(time.RFC3339Nano),
-			},
-			"sess_fresh": map[string]any{
-				"title":           "fresh chat",
-				"workspacePath":   "/Users/me/new-proj",
-				"lastMessageDate": now.Add(-30 * time.Second).Format(time.RFC3339Nano),
-			},
-		},
-	}
-	writeFakeKiroDB(t, root, index, nil)
+	hashA := "ws-aaaa"
+	hashB := "ws-bbbb"
+
+	// Two workspaces, two sessions each; the freshest in time
+	// wins regardless of which workspace it lives in.
+	writeFakeKiroState(t, root, hashA, "sess-old", map[string]any{
+		"id":             "sess-old",
+		"title":          "old chat",
+		"workspacePaths": []string{"/Users/me/old-proj"},
+		"createdAt":      now.Add(-3 * time.Hour).Format(time.RFC3339Nano),
+		"lastModifiedAt": now.Add(-2 * time.Hour).Format(time.RFC3339Nano),
+	}, nil, []map[string]any{
+		{"op": "add", "sessionPath": hashA + "/sess-old", "at": now.Add(-2 * time.Hour).UnixMilli()},
+	})
+	writeFakeKiroState(t, root, hashB, "sess-fresh", map[string]any{
+		"id":             "sess-fresh",
+		"title":          "fresh chat",
+		"workspacePaths": []string{"/Users/me/new-proj"},
+		"createdAt":      now.Add(-2 * time.Minute).Format(time.RFC3339Nano),
+		"lastModifiedAt": now.Add(-30 * time.Second).Format(time.RFC3339Nano),
+	}, nil, []map[string]any{
+		{"op": "add", "sessionPath": hashB + "/sess-fresh", "at": now.Add(-30 * time.Second).UnixMilli()},
+	})
 
 	loc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{StateDir: root, Now: func() time.Time { return now }})
 	if err != nil {
@@ -81,8 +115,8 @@ func TestSessionLocatorPicksFreshestFromIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("locate: %v", err)
 	}
-	if sess.SessionID != "sess_fresh" {
-		t.Fatalf("session id = %q, want sess_fresh", sess.SessionID)
+	if sess.SessionID != "sess-fresh" {
+		t.Fatalf("session id = %q, want sess-fresh", sess.SessionID)
 	}
 	if sess.Project != "new-proj" {
 		t.Fatalf("project = %q, want new-proj", sess.Project)
@@ -93,35 +127,54 @@ func TestSessionLocatorPicksFreshestFromIndex(t *testing.T) {
 	if sess.Title != "fresh chat" {
 		t.Fatalf("title = %q, want fresh chat", sess.Title)
 	}
-	if sess.Source != "sqlite" {
-		t.Fatalf("source = %q, want sqlite", sess.Source)
+	if sess.Source != "jsonl" {
+		t.Fatalf("source = %q, want jsonl", sess.Source)
 	}
 	if !sess.TouchedAt.Equal(now.Add(-30 * time.Second)) {
 		t.Fatalf("touchedAt = %s, want %s", sess.TouchedAt, now.Add(-30*time.Second))
 	}
 }
 
-func TestSessionLocatorEnrichesFromPerSessionBlob(t *testing.T) {
+func TestSessionLocatorPeeksAssistantPreview(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	index := map[string]any{
-		"version": 1,
-		"entries": map[string]any{
-			"sess_a": map[string]any{
-				"title":           "stale title in index",
-				"workspacePath":   "/Users/me/proj",
-				"lastMessageDate": now.Add(-1 * time.Minute).Format(time.RFC3339Nano),
+	hash := "ws-cccc"
+	messages := []map[string]any{
+		{
+			"id":        "tool-call-1",
+			"timestamp": now.Add(-1 * time.Minute).Format(time.RFC3339Nano),
+			"payload": map[string]any{
+				"type":     "tool_call",
+				"toolName": "fetch_cloud_config",
+			},
+		},
+		{
+			"id":        "user-1",
+			"timestamp": now.Add(-50 * time.Second).Format(time.RFC3339Nano),
+			"payload": map[string]any{
+				"type":    "user",
+				"content": "summarize this project",
+			},
+		},
+		{
+			"id":        "assistant-1",
+			"timestamp": now.Add(-30 * time.Second).Format(time.RFC3339Nano),
+			"payload": map[string]any{
+				"type": "assistant",
+				"content": []map[string]any{
+					{"type": "text", "text": "Project overview: an agent tower."},
+				},
 			},
 		},
 	}
-	perSession := map[string]map[string]any{
-		"sess_a": {
-			"title":           "fresh title from per-session blob",
-			"preview":         "snippets help /resume show the right card",
-			"lastMessageDate": now.Add(-2 * time.Minute).Format(time.RFC3339Nano),
-		},
-	}
-	writeFakeKiroDB(t, root, index, perSession)
+	writeFakeKiroState(t, root, hash, "sess-peek", map[string]any{
+		"id":             "sess-peek",
+		"title":          "summarize this project",
+		"workspacePaths": []string{"/Users/me/proj"},
+		"lastModifiedAt": now.Add(-30 * time.Second).Format(time.RFC3339Nano),
+	}, messages, []map[string]any{
+		{"op": "add", "sessionPath": hash + "/sess-peek", "at": now.Add(-30 * time.Second).UnixMilli()},
+	})
 
 	loc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{StateDir: root, Now: func() time.Time { return now }})
 	if err != nil {
@@ -131,30 +184,44 @@ func TestSessionLocatorEnrichesFromPerSessionBlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("locate: %v", err)
 	}
-	if sess.Title != "fresh title from per-session blob" {
-		t.Fatalf("title = %q, want fresh title from per-session blob", sess.Title)
+	if sess.Preview != "Project overview: an agent tower." {
+		t.Fatalf("preview = %q, want assistant text", sess.Preview)
 	}
-	if sess.Preview != "snippets help /resume show the right card" {
-		t.Fatalf("preview = %q, want snippet text", sess.Preview)
+}
+
+func TestSessionLocatorSkipsNonAddOps(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	hash := "ws-dddd"
+	// Index has an unknown op plus a non-add one. The locator
+	// must ignore them and only consider the `add`.
+	writeFakeKiroState(t, root, hash, "sess-real", map[string]any{
+		"id":             "sess-real",
+		"title":          "real",
+		"workspacePaths": []string{"/Users/me/proj"},
+		"lastModifiedAt": now.Format(time.RFC3339Nano),
+	}, nil, []map[string]any{
+		{"op": "remove", "sessionPath": hash + "/sess-gone", "at": now.UnixMilli()},
+		{"op": "garbage", "sessionPath": hash + "/sess-also-gone", "at": now.UnixMilli()},
+		{"op": "add", "sessionPath": hash + "/sess-real", "at": now.UnixMilli()},
+	})
+	loc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{StateDir: root, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := loc.Locate(context.Background())
+	if err != nil {
+		t.Fatalf("locate: %v", err)
+	}
+	if sess.SessionID != "sess-real" {
+		t.Fatalf("session id = %q, want sess-real", sess.SessionID)
 	}
 }
 
 func TestSessionLocatorNoIndexReturnsSentinel(t *testing.T) {
 	root := t.TempDir()
-	dbDir := filepath.Join(root, "User", "globalStorage", "kiro.kiroagent", "default")
-	if err := os.MkdirAll(dbDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dbDir, "state.vscdb"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)`); err != nil {
-		t.Fatal(err)
-	}
-	// Empty db; no index.
-
+	// Even an empty ~/.kiro/ is OK; only the missing index
+	// should produce ErrNoActiveSession.
 	loc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{StateDir: root})
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +233,7 @@ func TestSessionLocatorNoIndexReturnsSentinel(t *testing.T) {
 }
 
 func TestSessionLocatorMissingDirIsSentinel(t *testing.T) {
-	loc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{StateDir: "/path/that/does/not/exist"})
+	loc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{StateDir: "/path/that/does/not/exist/anywhere"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,22 +243,13 @@ func TestSessionLocatorMissingDirIsSentinel(t *testing.T) {
 	}
 }
 
-func TestSessionLocatorMalformedIndexFallsBack(t *testing.T) {
+func TestSessionLocatorMalformedIndexFallsThrough(t *testing.T) {
 	root := t.TempDir()
-	dbDir := filepath.Join(root, "User", "globalStorage", "kiro.kiroagent", "default")
-	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+	indexDir := filepath.Join(root, "session-index")
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dbPath := filepath.Join(dbDir, "state.vscdb")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO ItemTable (key, value) VALUES (?, ?)`, "chat.ChatSessionStore.index", []byte("not json")); err != nil {
+	if err := os.WriteFile(filepath.Join(indexDir, "ws-eeee.jsonl"), []byte("not json\nalso not json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	loc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{StateDir: root})
@@ -199,11 +257,8 @@ func TestSessionLocatorMalformedIndexFallsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = loc.Locate(context.Background())
-	if err == nil {
-		t.Fatal("expected error for malformed index, got nil")
-	}
-	if errors.Is(err, domain.ErrNoActiveSession) {
-		t.Fatalf("malformed index should not collapse to sentinel: %v", err)
+	if !errors.Is(err, domain.ErrNoActiveSession) {
+		t.Fatalf("expected ErrNoActiveSession for malformed index, got %v", err)
 	}
 }
 
@@ -222,24 +277,22 @@ func TestSessionLocatorSetStateDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A second fake db at a different root, then swap.
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	other := t.TempDir()
-	writeFakeKiroDB(t, other, map[string]any{
-		"version": 1,
-		"entries": map[string]any{
-			"sess_other": map[string]any{
-				"title":           "after swap",
-				"lastMessageDate": now.Format(time.RFC3339Nano),
-			},
-		},
-	}, nil)
+	writeFakeKiroState(t, other, "ws-ffff", "sess-other", map[string]any{
+		"id":             "sess-other",
+		"title":          "after swap",
+		"workspacePaths": []string{"/Users/me/other"},
+		"lastModifiedAt": now.Format(time.RFC3339Nano),
+	}, nil, []map[string]any{
+		{"op": "add", "sessionPath": "ws-ffff/sess-other", "at": now.UnixMilli()},
+	})
 	loc.SetStateDir(other)
 	sess, err := loc.Locate(context.Background())
 	if err != nil {
 		t.Fatalf("locate after swap: %v", err)
 	}
-	if sess.SessionID != "sess_other" {
-		t.Fatalf("session id = %q, want sess_other", sess.SessionID)
+	if sess.SessionID != "sess-other" {
+		t.Fatalf("session id = %q, want sess-other", sess.SessionID)
 	}
 }

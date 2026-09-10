@@ -1,110 +1,99 @@
 package kiro
 
 import (
+	"bufio"
+	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
-// SessionLocator answers "what Kiro chat session is the user
-// driving right now" for the /resume handler.
+// SessionLocator answers "what Kiro session is the user driving
+// right now" for the /resume handler.
 //
-// Kiro is an Electron-based fork of Code OSS, so it inherits
-// VS Code's storage layout: every extension keeps its data under
-// <userData>/User/globalStorage/<publisher>.<extension>/. The
-// kiro.kiroagent extension writes its chat sessions as blobs in a
-// SQLite `state.vscdb` (VS Code's storage database) under
-// <userData>/User/globalStorage/kiro.kiroagent/default/.
+// The Kiro IDE and the Kiro CLI both persist chat sessions under
+// ~/.kiro/:
 //
-// The locator reads `chat.ChatSessionStore.index` (the session
-// index) and, when present, the per-session blobs at
-// `chat.ChatSessionStore.<id>`. The on-disk format has shifted
-// between Kiro releases, so the parser is defensive: it tries a
-// handful of field names, accepts either "id" or "sessionId" as the
-// session key, and silently drops sessions it cannot decode. This
-// keeps the locator working when Kiro renames an internal field.
+//	~/.kiro/session-index/<workspace-hash>.jsonl   # newline-delimited ops
+//	~/.kiro/sessions/<workspace-hash>/<id>/session.json
+//	~/.kiro/sessions/<workspace-hash>/<id>/messages.jsonl
+//
+// Each index line carries an operation (`add`), the session path
+// (relative to ~/.kiro/sessions/) and a millisecond epoch. The
+// freshest line is the most recently touched session. The
+// locator reads session.json for the metadata, then peeks the
+// tail of messages.jsonl for the last assistant text.
+//
+// The locator does not depend on the Kiro IDE being open: the CLI
+// writes the same layout, so a CLI-driven session and an
+// IDE-driven one are reported identically.
 type SessionLocator struct {
-	mu     sync.RWMutex
-	dbPath string
-	now    func() time.Time
+	mu      sync.RWMutex
+	rootDir string
+	now     func() time.Time
 }
 
 // SessionLocatorOptions tunes the locator. StateDir overrides the
-// Kiro userData root (used by tests and by users with a custom
-// install). When empty the locator derives the default from the
-// current OS.
+// Kiro state root (used by tests and by users who have a custom
+// install). When empty the locator defaults to ~/.kiro.
 type SessionLocatorOptions struct {
 	StateDir string
 	Now      func() time.Time
 }
 
-// NewSessionLocator builds the locator. It does not open the SQLite
-// file until the first call to Locate; the bot stays bootable on
-// machines without Kiro.
+// NewSessionLocator builds the locator. It does not touch the
+// disk until the first call to Locate, so the bot stays bootable
+// on machines without Kiro.
 func NewSessionLocator(opts SessionLocatorOptions) (*SessionLocator, error) {
 	root := strings.TrimSpace(opts.StateDir)
 	if root == "" {
-		derived, err := defaultKiroStateDir()
-		if err != nil {
-			return nil, err
-		}
-		root = derived
+		root = defaultKiroStateDir()
 	}
-	dbPath := filepath.Join(root, "User", "globalStorage", "kiro.kiroagent", "default", "state.vscdb")
 	now := opts.Now
 	if now == nil {
 		now = time.Now
 	}
-	return &SessionLocator{dbPath: dbPath, now: now}, nil
+	return &SessionLocator{rootDir: root, now: now}, nil
 }
 
 // Kind reports the agent this locator serves.
 func (l *SessionLocator) Kind() domain.AgentKind { return domain.AgentKiro }
 
-// Locate opens the Kiro SQLite store (read-only, no journal touch)
-// and returns the most recently active chat session. The returned
-// ActiveSession is the best-effort projection; fields the locator
-// could not determine are left empty. Returns ErrNoActiveSession
-// when the database is missing, the index is empty, or every
-// session entry is malformed.
+// Locate returns the most recent Kiro chat session across every
+// workspace. Returns ErrNoActiveSession when ~/.kiro/ is missing
+// or the session index is empty. The locator is best-effort:
+// malformed index lines or unreadable session files are dropped
+// silently so a single corrupt workspace does not blank the
+// whole /resume card.
 func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.ActiveSession{}, err
 	}
 	l.mu.RLock()
-	dbPath := l.dbPath
+	root := l.rootDir
 	l.mu.RUnlock()
-	if dbPath == "" {
+	if root == "" {
 		return domain.ActiveSession{}, domain.ErrNoActiveSession
 	}
-	if _, err := os.Stat(dbPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return domain.ActiveSession{}, domain.ErrNoActiveSession
-		}
-		return domain.ActiveSession{}, fmt.Errorf("stat kiro state db: %w", err)
-	}
-	entries, err := readKiroSessionIndex(dbPath)
+	entries, err := readKiroIndex(root)
 	if err != nil {
 		return domain.ActiveSession{}, err
 	}
 	if len(entries) == 0 {
 		return domain.ActiveSession{}, domain.ErrNoActiveSession
 	}
-	// Pick the freshest by the parsed timestamp; fall back to
-	// the iteration order when timestamps are missing.
+	// Sort by the index timestamp; fall back to the session.json
+	// mtime when the index line is missing one.
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[i].TouchedAt.After(entries[j].TouchedAt)
 	})
@@ -117,248 +106,294 @@ func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, erro
 		Title:     freshest.Title,
 		Preview:   freshest.Preview,
 		TouchedAt: freshest.TouchedAt,
-		Source:    "sqlite",
+		Source:    "jsonl",
 	}, nil
 }
 
-// SetStateDir swaps the watched database path. Used by Settings or
-// by the macOS wrapper when the user changes the Kiro install
-// location at runtime.
+// SetStateDir swaps the watched root at runtime. Used by Settings
+// or the macOS wrapper when the user changes the Kiro install.
 func (l *SessionLocator) SetStateDir(root string) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.dbPath = filepath.Join(strings.TrimSpace(root), "User", "globalStorage", "kiro.kiroagent", "default", "state.vscdb")
+	l.rootDir = strings.TrimSpace(root)
+	l.mu.Unlock()
 }
 
-// defaultKiroStateDir returns the Kiro userData root for the host
-// OS. Kiro mirrors Code OSS conventions: ~/Library/Application
-// Support/Kiro on macOS, %APPDATA%\Kiro on Windows, $XDG_CONFIG_HOME
-// or ~/.config/Kiro on Linux.
-func defaultKiroStateDir() (string, error) {
+// defaultKiroStateDir returns ~/.kiro. Kiro keeps its runtime
+// state under a single hidden directory in the user's home; this
+// is the same for every supported OS.
+func defaultKiroStateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("locate home: %w", err)
+		return filepath.Join(os.TempDir(), ".kiro")
 	}
-	switch runtime.GOOS {
-	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "Kiro"), nil
-	case "windows":
-		appData := os.Getenv("APPDATA")
-		if appData == "" {
-			appData = filepath.Join(home, "AppData", "Roaming")
-		}
-		return filepath.Join(appData, "Kiro"), nil
-	default:
-		xdg := os.Getenv("XDG_CONFIG_HOME")
-		if xdg == "" {
-			xdg = filepath.Join(home, ".config")
-		}
-		return filepath.Join(xdg, "Kiro"), nil
-	}
+	return filepath.Join(home, ".kiro")
 }
 
-// kiroSession is the in-memory projection of one row from the
-// chat.ChatSessionStore.index blob. The locator collects these,
-// sorts by TouchedAt, and returns the freshest.
-type kiroSession struct {
+// indexEntry is the in-memory projection of one line of
+// ~/.kiro/session-index/<hash>.jsonl enriched with the metadata
+// read from session.json. The locator sorts these by TouchedAt
+// desc and returns the freshest.
+type indexEntry struct {
 	SessionID string
 	Title     string
 	Workspace string
 	Preview   string
 	TouchedAt time.Time
+	Path      string // absolute path to the session.json
 }
 
-// readKiroSessionIndex opens the SQLite db in read-only mode and
-// pulls the chat.ChatSessionStore.index blob. It also opportunistically
-// enriches each session with the per-session blob at
-// chat.ChatSessionStore.<id> when one exists, so titles and previews
-// survive Kiro's tendency to keep the index lean.
+// readKiroIndex lists every JSONL file under
+// ~/.kiro/session-index/, parses each line as a `{op, sessionPath,
+// at}` record, follows the sessionPath into the per-session
+// directory, reads session.json for the canonical metadata, and
+// peeks messages.jsonl for the most recent assistant text.
 //
-// The function is package-private to keep the SQLite dependency
-// isolated from the rest of the project: only this file imports
-// modernc.org/sqlite. Tests can swap the implementation by
-// pointing StateDir at a temp dir.
-func readKiroSessionIndex(dbPath string) ([]kiroSession, error) {
-	// mode=ro + immutable=1 keep the lookup cheap and side-effect
-	// free. modernc.org/sqlite uses sqlite3_open_v2 under the
-	// hood; the "immutable" flag is a performance hint.
-	dsn := fmt.Sprintf("file:%s?mode=ro&immutable=1", dbPath)
-	db, err := sql.Open("sqlite", dsn)
+// Lines whose `op` is not "add" (the file is a small journal: we
+// only care about creates) are ignored. The function never fails
+// the whole call because of one bad workspace: a missing or
+// malformed entry is dropped and the rest are returned.
+func readKiroIndex(root string) ([]indexEntry, error) {
+	indexDir := filepath.Join(root, "session-index")
+	entries, err := os.ReadDir(indexDir)
 	if err != nil {
-		return nil, fmt.Errorf("open kiro state db: %w", err)
-	}
-	defer db.Close()
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("ping kiro state db: %w", err)
-	}
-	rows, err := db.Query(`SELECT key, value FROM ItemTable WHERE key LIKE 'chat.%'`)
-	if err != nil {
-		return nil, fmt.Errorf("query kiro state db: %w", err)
-	}
-	defer rows.Close()
-
-	// First pass: the index. Second pass enriches with per-session
-	// blobs when present. We materialise into maps because the
-	// per-session rows may arrive in any order.
-	indexBlob := []byte(nil)
-	perSession := map[string][]byte{}
-	for rows.Next() {
-		var key string
-		var value []byte
-		if err := rows.Scan(&key, &value); err != nil {
-			return nil, fmt.Errorf("scan kiro state db: %w", err)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, domain.ErrNoActiveSession
 		}
-		switch {
-		case key == "chat.ChatSessionStore.index":
-			indexBlob = value
-		case strings.HasPrefix(key, "chat.ChatSessionStore."):
-			perSession[strings.TrimPrefix(key, "chat.ChatSessionStore.")] = value
+		return nil, fmt.Errorf("read kiro session index: %w", err)
+	}
+	out := make([]indexEntry, 0, 8)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate kiro state db: %w", err)
-	}
-	if len(indexBlob) == 0 {
-		return nil, nil
-	}
-	return parseKiroIndex(indexBlob, perSession)
-}
-
-// parseKiroIndex unpacks the chat.ChatSessionStore.index blob and
-// returns the surviving sessions. The JSON shape is best-effort:
-//   - older Kiro versions used {"version":1,"entries":{...}}
-//   - newer releases may use {"version":2,"sessions":[{...}]}
-//   - field names inside each entry drift (id / sessionId,
-//     title / name, lastMessageDate / updatedAt)
-//
-// The parser tries every shape, then enriches each entry with the
-// per-session blob when one exists in the map. Malformed entries
-// are dropped silently; the user would otherwise see noisy errors
-// every time Kiro changes an internal field.
-func parseKiroIndex(blob []byte, perSession map[string][]byte) ([]kiroSession, error) {
-	var doc map[string]any
-	if err := json.Unmarshal(blob, &doc); err != nil {
-		return nil, fmt.Errorf("decode kiro index: %w", err)
-	}
-	out := make([]kiroSession, 0, 8)
-	switch entries := doc["entries"].(type) {
-	case map[string]any:
-		// {entries: {<id>: {...}}}
-		for id, raw := range entries {
-			entry, _ := raw.(map[string]any)
-			sess := entryToSession(id, entry)
-			if sess.SessionID == "" {
-				continue
-			}
-			enrichFromBlob(&sess, perSession[sess.SessionID])
-			out = append(out, sess)
+		if !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
 		}
-	case []any:
-		// {entries: [{...}]} (defensive; not observed)
-		for _, raw := range entries {
-			entry, _ := raw.(map[string]any)
-			id := firstString(entry, "id", "sessionId", "session_id", "uuid")
-			if id == "" {
-				continue
-			}
-			sess := entryToSession(id, entry)
-			enrichFromBlob(&sess, perSession[id])
-			out = append(out, sess)
+		path := filepath.Join(indexDir, entry.Name())
+		lines, err := readKiroIndexFile(path)
+		if err != nil {
+			continue
 		}
+		out = append(out, lines...)
 	}
-	if list, ok := doc["sessions"].([]any); ok {
-		// {sessions: [{...}]}
-		for _, raw := range list {
-			entry, _ := raw.(map[string]any)
-			id := firstString(entry, "id", "sessionId", "session_id", "uuid")
-			if id == "" {
-				continue
-			}
-			sess := entryToSession(id, entry)
-			enrichFromBlob(&sess, perSession[id])
-			out = append(out, sess)
-		}
+	if len(out) == 0 {
+		return nil, domain.ErrNoActiveSession
 	}
 	return out, nil
 }
 
-// entryToSession projects one parsed JSON object into kiroSession.
-// All fields are best-effort: a missing field leaves the empty
-// zero value, which the caller filters out.
-func entryToSession(id string, entry map[string]any) kiroSession {
-	return kiroSession{
-		SessionID: id,
-		Title:     firstString(entry, "title", "name", "summary", "customTitle"),
-		Workspace: firstString(entry, "workspacePath", "cwd", "workingDirectory", "workspaceFolder", "workspace", "folder"),
-		Preview:   firstString(entry, "preview", "lastResponse", "lastMessage", "snippet"),
-		TouchedAt: parseKiroTimestamp(firstString(entry, "lastMessageDate", "updatedAt", "updated", "lastModified", "modified", "lastActiveAt")),
+// readKiroIndexFile parses one JSONL file under session-index. It
+// keeps only the latest `add` op per `sessionPath` (the file is a
+// small journal, so duplicates can accumulate when the IDE
+// re-registers a session).
+func readKiroIndexFile(path string) ([]indexEntry, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-}
-
-// enrichFromBlob layers per-session metadata on top of an
-// index-only projection. The per-session blob often carries a
-// better title and a more accurate timestamp than the index, so
-// the locator prefers it whenever present.
-func enrichFromBlob(sess *kiroSession, blob []byte) {
-	if len(blob) == 0 {
-		return
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(blob, &doc); err != nil {
-		return
-	}
-	if title := firstString(doc, "title", "name", "summary", "customTitle"); title != "" {
-		sess.Title = title
-	}
-	if preview := firstString(doc, "preview", "lastResponse", "lastMessage", "snippet"); preview != "" {
-		sess.Preview = preview
-	}
-	if touched := parseKiroTimestamp(firstString(doc, "lastMessageDate", "updatedAt", "updated", "lastModified", "modified", "lastActiveAt")); !touched.IsZero() {
-		sess.TouchedAt = touched
-	}
-	if ws := firstString(doc, "workspacePath", "cwd", "workingDirectory", "workspaceFolder", "workspace", "folder"); ws != "" {
-		sess.Workspace = ws
-	}
-}
-
-// firstString returns the first non-empty string found at any of
-// the supplied keys. Mirrors the same defensive helper the copilot
-// locator uses; the implementations are kept separate to avoid
-// pulling the copilot package into kiro's dependency graph.
-func firstString(doc map[string]any, keys ...string) string {
-	for _, k := range keys {
-		v, ok := doc[k]
-		if !ok {
+	defer file.Close()
+	latest := map[string]indexEntry{}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		var rec struct {
+			Op          string `json:"op"`
+			SessionPath string `json:"sessionPath"`
+			At          int64  `json:"at"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
 			continue
 		}
-		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
+		if rec.Op != "add" || rec.SessionPath == "" {
+			continue
+		}
+		entry := latest[rec.SessionPath]
+		entry.Path = rec.SessionPath
+		if rec.At > 0 {
+			entry.TouchedAt = time.UnixMilli(rec.At).UTC()
+		}
+		latest[rec.SessionPath] = entry
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]indexEntry, 0, len(latest))
+	for relPath, entry := range latest {
+		// `entry.Path` is relative to ~/.kiro/sessions/.
+		// Resolve to the on-disk location and load session.json
+		// for the canonical metadata.
+		absSessionDir := filepath.Join(filepath.Dir(path), "..", "sessions", relPath)
+		// filepath.Clean collapses the "../" hop.
+		absSessionDir = filepath.Clean(absSessionDir)
+		enrichFromSessionJSON(&entry, absSessionDir)
+		// Drop entries whose session.json we could not read AND
+		// the index has no useful timestamp. The user would
+		// otherwise see ghost entries that we cannot title.
+		if entry.Title == "" && entry.Workspace == "" && entry.TouchedAt.IsZero() {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// enrichFromSessionJSON reads session.json for the canonical
+// metadata and messages.jsonl for the last assistant text. The
+// on-disk format is documented in
+// ~/.kiro/sessions/<hash>/<id>/session.json (schemaVersion
+// 1.0.0, see kiro-cli). Missing files leave the entry unchanged.
+func enrichFromSessionJSON(entry *indexEntry, sessionDir string) {
+	metaPath := filepath.Join(sessionDir, "session.json")
+	raw, err := os.ReadFile(metaPath)
+	if err != nil {
+		return
+	}
+	var doc struct {
+		ID             string   `json:"id"`
+		Title          string   `json:"title"`
+		WorkspacePaths []string `json:"workspacePaths"`
+		RootPaths      []string `json:"rootPaths"`
+		CreatedAt      string   `json:"createdAt"`
+		LastModifiedAt string   `json:"lastModifiedAt"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return
+	}
+	if doc.ID != "" {
+		entry.SessionID = doc.ID
+	}
+	if doc.Title != "" {
+		entry.Title = doc.Title
+	}
+	if len(doc.WorkspacePaths) > 0 && doc.WorkspacePaths[0] != "" {
+		entry.Workspace = doc.WorkspacePaths[0]
+	} else if len(doc.RootPaths) > 0 && doc.RootPaths[0] != "" {
+		entry.Workspace = doc.RootPaths[0]
+	}
+	if t, err := parseKiroTimestamp(firstNonEmpty(doc.LastModifiedAt, doc.CreatedAt)); err == nil && !t.IsZero() {
+		entry.TouchedAt = t
+	}
+	// Fall back to the file's mtime when neither timestamp is
+	// present (older Kiro builds that did not stamp the JSON).
+	if entry.TouchedAt.IsZero() {
+		if info, err := os.Stat(metaPath); err == nil {
+			entry.TouchedAt = info.ModTime().UTC()
+		}
+	}
+	entry.Preview = peekAssistantText(filepath.Join(sessionDir, "messages.jsonl"))
+}
+
+// peekAssistantText returns the most recent assistant message
+// in messages.jsonl. The file is a chronological log; we read it
+// fully (sessions are bounded to a few MB even for long runs) and
+// walk the lines from the bottom. The first non-empty assistant
+// text wins, so the function is O(n) in the file size and matches
+// the user's "what did the model just say" mental model.
+func peekAssistantText(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		text := extractAssistantText(lines[i])
+		if text != "" {
+			if len(text) > 240 {
+				return text[:240] + "…"
+			}
+			return text
 		}
 	}
 	return ""
 }
 
-// parseKiroTimestamp accepts the time encodings the Kiro extension
-// has used across releases. Anything we cannot parse becomes the
-// zero time so the sort treats the entry as "unknown" and the
-// caller falls back to the iteration order.
-func parseKiroTimestamp(s string) time.Time {
-	if s == "" {
-		return time.Time{}
+// extractAssistantText pulls the assistant text out of one
+// messages.jsonl line. The Kiro wire format (per
+// ~/.kiro/sessions/<id>/messages.jsonl) keeps the response as a
+// single `content` string at the top level of the payload,
+// alongside operational fields (operationType, executionId,
+// _meta). Older revisions used an array of typed parts; both
+// shapes are accepted so the locator keeps working across Kiro
+// releases.
+func extractAssistantText(line string) string {
+	var env struct {
+		Payload struct {
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(line), &env); err != nil {
+		return ""
+	}
+	if env.Payload.Type != "assistant" {
+		return ""
+	}
+	if len(env.Payload.Content) == 0 {
+		return ""
+	}
+	// Path 1: content is a string. The common case in current
+	// Kiro releases.
+	var asString string
+	if err := json.Unmarshal(env.Payload.Content, &asString); err == nil {
+		return strings.TrimSpace(asString)
+	}
+	// Path 2: content is an array of typed parts. Older releases.
+	var asParts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(env.Payload.Content, &asParts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, part := range asParts {
+		if part.Type != "text" || part.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(part.Text)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// firstNonEmpty returns the first non-empty argument. Used by
+// enrichFromSessionJSON to prefer lastModifiedAt over createdAt
+// when both are present.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// parseKiroTimestamp accepts the ISO 8601 strings the Kiro CLI
+// stamps into session.json. Anything we cannot parse leaves the
+// entry's TouchedAt zero so the caller falls back to mtime.
+func parseKiroTimestamp(s string) (time.Time, error) {
+	if strings.TrimSpace(s) == "" {
+		return time.Time{}, errors.New("empty time")
 	}
 	layouts := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
 		"2006-01-02T15:04:05.000Z",
 		"2006-01-02T15:04:05Z",
-		"2006-01-02T15:04:05",
 	}
 	for _, layout := range layouts {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t
+			return t, nil
 		}
 	}
-	return time.Time{}
+	return time.Time{}, errors.New("unrecognised time format")
 }
 
 // Compile-time guard: SessionLocator must satisfy the domain port.

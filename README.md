@@ -47,7 +47,7 @@ superficie de ataque pública más allá de la API de bots de Telegram.
 - Al menos uno de los siguientes agentes instalado localmente:
   - `opencode` (CLI; instala vía `brew install anomalyco/tap/opencode`)
   - `claude` (Claude Code CLI)
-  - `kiro` (Kiro IDE; sesiones en `~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/default/state.vscdb`)
+  - `kiro` (Kiro IDE/CLI; sesiones en `~/.kiro/`)
   - `copilot` o `copilot-language-server` (GitHub Copilot LSP)
 - Un token de bot de Telegram desde `@BotFather`.
 - Tu ID personal de chat desde `@userinfobot`.
@@ -114,6 +114,10 @@ disponibles son:
 | Variable              | Por defecto                                            | Descripción                                                                                              |
 |-----------------------|--------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
 | `AGENTOWER_STATE_PATH`   | `<WORKSPACE_ROOT>/.agentower/state.db`           | Ubicación de la base SQLite.                                                                             |
+| `AGENTOWER_STALE_AFTER`   | `30m`                                           | Sesiones más viejas que esto se ignoran en `/resume`.                                                      |
+| `AGENTOWER_COPILOT_STATE_DIR` | derivado del SO                            | Override del path de VS Code globalStorage para Copilot Chat.                                            |
+| `AGENTOWER_CLAUDE_STATE_DIR`  | `~/.claude`                                  | Override del path de Claude Code.                                                                        |
+| `AGENTOWER_KIRO_STATE_DIR`    | `~/.kiro`                                    | Override del path de Kiro (CLI e IDE).                                                                   |
 | `TELEGRAM_API_ROOT`   | (predeterminado de `telebot.v3`)                        | Override del endpoint de la API de Telegram (útil para mirrors o tests). Se lee del `.env` o del shell. |
 | `TELEGRAM_PROXY_URL`  | _(vacío)_                                               | URL de proxy HTTP para las llamadas a la API de Telegram (formato `http://host:port`).                  |
 | `ENV_FILE`            | `.env` subiendo desde el directorio actual              | Forzar un archivo `.env` específico.                                                                     |
