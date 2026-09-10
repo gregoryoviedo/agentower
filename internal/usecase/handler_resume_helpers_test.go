@@ -16,9 +16,9 @@ import (
 	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
 
-// newContinuarFixture wires a Handler with the bare minimum the
-// /continuar flow needs: a workspace browser, a SQLite state, the
-// fake opencode server (the handler does not call it for /continuar
+// newResumeFixture wires a Handler with the bare minimum the
+// /resume flow needs: a workspace browser, a SQLite state, the
+// fake opencode server (the handler does not call it for /resume
 // directly, but other handler methods may), and an empty locator
 // registry the test can populate.
 //
@@ -26,7 +26,7 @@ import (
 // (replacing the default time.Now via SetStaleAfter tricks is not
 // enough because the freshness text relies on Now too; we accept
 // the small drift and assert on second-precise outputs).
-func newContinuarFixture(t *testing.T, workspaceDir string, now time.Time) (*usecase.Handler, *sqlite.Repository, domain.ActiveLocatorRegistry) {
+func newResumeFixture(t *testing.T, workspaceDir string, now time.Time) (*usecase.Handler, *sqlite.Repository, domain.ActiveLocatorRegistry) {
 	t.Helper()
 	browser, err := usecase.NewWorkspaceBrowser(workspace.OSFileSystem{}, workspaceDir)
 	if err != nil {
@@ -79,11 +79,11 @@ func contains(haystack, needle string) bool {
 }
 
 // primaryConfirmButton finds the first button whose data starts
-// with "cc|" — that is the "yes, continue" quick-tap.
+// with "rsc|" — that is the "yes, continue" quick-tap.
 func primaryConfirmButton(resp domain.BotResponse) string {
 	for _, row := range resp.Buttons {
 		for _, b := range row {
-			if strings.HasPrefix(b.Data, "cc|") {
+			if strings.HasPrefix(b.Data, "rsc|") {
 				return b.Data
 			}
 		}

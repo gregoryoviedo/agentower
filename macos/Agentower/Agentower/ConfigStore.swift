@@ -64,14 +64,13 @@ final class ConfigStore {
 
     /// The set of agent kinds the wrapper knows about, in display order.
     /// Matches internal/adapter/agents.AllAgentKinds.
-    static let agentKinds: [String] = ["opencode", "claude", "codex", "kiro", "copilot"]
+    static let agentKinds: [String] = ["opencode", "claude", "kiro", "copilot"]
 
     /// Default port per agent. Matches the detector defaults.
     static func defaultPort(for kind: String) -> Int {
         switch kind {
         case "opencode": return 4096
         case "claude":   return 4097
-        case "codex":    return 4098
         case "kiro":     return 4099
         case "copilot":  return 4100
         default:         return 4096
@@ -83,7 +82,6 @@ final class ConfigStore {
         switch kind {
         case "opencode": return "opencode"
         case "claude":   return "Claude"
-        case "codex":    return "Codex"
         case "kiro":     return "Kiro"
         case "copilot":  return "GitHub Copilot"
         default:         return kind
@@ -138,7 +136,6 @@ final class ConfigStore {
         let pathCandidates: [(String, [String])] = [
             ("opencode", ["opencode"]),
             ("claude",   ["claude"]),
-            ("codex",    ["codex"]),
             ("kiro",     ["kiro"]),
             ("copilot",  ["copilot", "copilot-language-server"]),
         ]

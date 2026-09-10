@@ -6,7 +6,7 @@ deliberately does not do, and where it is going next.
 ## Vision
 
 Agentower turns Telegram into a thin remote control for one of several
-local AI agents — opencode, Claude Code, Codex, Kiro, GitHub Copilot.
+local AI agents — opencode, Claude Code, Kiro, GitHub Copilot.
 The bot is the only surface you interact with on your phone; whichever
 agent is active keeps doing the work locally on your Mac.
 
@@ -51,7 +51,7 @@ On macOS the wrapper is the convenient launcher:
   adapter.
 - Commands: `/start`, `/help`, `/status`, `/projects`, `/agent`,
   `/agents`, `/agents migrate`, `/init`, `/sessions`, `/diff`,
-  `/changes`, `/undo`, `/watch`, `/continue`, `/continuar`.
+  `/changes`, `/undo`, `/watch`, `/continue`, `/resume`.
 - Free-form text prompts forwarded to the active agent.
 - SQLite-backed runtime state (workspace, project, session, agent,
   navigation).
@@ -59,7 +59,7 @@ On macOS the wrapper is the convenient launcher:
   `ENV_FILE` override). Per-agent settings live under
   `AGENT_<KIND>_ENABLED/BIN/PORT/ARGS`.
 - Agent subprocess lifecycle: each adapter owns the per-kind lifecycle
-  (opencode via HTTP+SIGTERM, Claude/Codex/Kiro via stdio JSON-RPC,
+  (opencode via HTTP+SIGTERM, Claude/Kiro via stdio JSON-RPC,
   Copilot via LSP). The `AgentServerManager` interface routes
   `Start/Stop/Started/OwnsSubprocess/WorkingDir` per kind.
 - `TELEGRAM_PROXY_URL` and `TELEGRAM_API_ROOT` for restricted networks.
@@ -144,7 +144,8 @@ On macOS the wrapper is the convenient launcher:
 Items in priority order, intentionally small and incremental:
 
 1. Streaming replies: surface the assistant text part-by-part in
-   Telegram as the agent emits it (today we wait for the final event).
+   Telegram as the agent emits it (today we wait for the final event
+   even for the copilot LSP path, which buffers the whole response).
 2. Pinned live status message (project, session, agent, changed files).
 3. Persistent reply keyboard with the most common actions.
 4. Auto-restart of the active agent when health checks fail.
@@ -157,9 +158,12 @@ Items in priority order, intentionally small and incremental:
    manual QA cycle.
 9. Branch-specific agent overrides (different agents for different
    git branches on the same project).
-10. Kiro `SessionLocator`: ship when Kiro's session storage path is
-    documented. The adapter and detector already support Kiro; the
-    locator is the only piece missing.
+10. Kiro session storage format: Kiro is a moving target (Code OSS
+    fork) and the locator's defensive parser will keep working as
+    long as the index blob is at `chat.ChatSessionStore.index` in
+    `state.vscdb`. If a future release moves the data, the locator
+    will return `ErrNoActiveSession` and we'll need to point the
+    reader at the new location.
 
 ## Change policy
 

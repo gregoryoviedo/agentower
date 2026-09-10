@@ -12,7 +12,7 @@ architectural decisions and trade-offs that shaped the code.
   optional launcher UI; the bot can run headless from a terminal.
 - Strict layering: pure domain, swappable adapters, easy testing.
 - Multi-agent: one Telegram chat at a time can drive any of the bundled
-  adapters (opencode HTTP, Claude/Codex/Kiro stdio JSON, GitHub Copilot
+  adapters (opencode HTTP, Claude/Kiro stdio JSON, GitHub Copilot
   LSP). Each agent has its own slot in the AgentServerManager.
 - Strict security by default: workspace-bounded, single-user, no public
   ports.
@@ -115,10 +115,6 @@ Adapters that implement the ports and depend on real-world libraries.
   <uuid> --cwd <dir>`. Sessions are spawned lazily on first prompt;
   the manager reaps the subprocess once the trailing `result` event
   lands.
-- `adapter/agents/codex`: same shape as Claude over
-  `codex exec --json --cd <dir>`. Revert / ListMessages are no-ops
-  (Codex CLI does not yet expose them) so the bot hides those
-  buttons.
 - `adapter/agents/kiro`: minimal adapter — only SendPrompt +
   Health; everything else returns `ErrAgentCapabilitiesLimited` because
   Kiro's CLI surface is still poorly documented.
@@ -196,7 +192,7 @@ file. Files of note:
 
 - **Inbound (Go bot)**: only `api.telegram.org`. No listening sockets.
 - **Outbound (Go bot)**: loopback only — `127.0.0.1:4096` for opencode,
-  or stdin/stdout pipes for Claude / Codex / Kiro, or a loopback
+  or stdin/stdout pipes for Claude / Kiro, or a loopback
   JSON-RPC stream for the GitHub Copilot LSP.
 - **Storage**: a single SQLite file with the runtime state.
 - **Storage (macOS wrapper)**: `UserDefaults` for Settings, a `0600`

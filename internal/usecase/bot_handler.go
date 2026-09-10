@@ -159,7 +159,7 @@ func (h *Handler) HandleCommand(ctx context.Context, chatID int64, command strin
 		return h.undo(ctx, chatID)
 	case "/continue":
 		return h.continueLast(ctx, chatID)
-	case "/continuar":
+	case "/resume":
 		return h.continuar(ctx, chatID, "")
 	case "/watch":
 		return h.watch(ctx, chatID, args)
@@ -173,7 +173,7 @@ func helpResponse() domain.BotResponse {
 		"Agentower listo.",
 		"",
 		"• /projects — selecciona la carpeta del proyecto.",
-		"• /agent — elige o cambia el agente de IA activo (opencode, Claude, Codex, Kiro, Copilot).",
+		"• /agent — elige o cambia el agente de IA activo (opencode, Claude, Kiro, Copilot).",
 		"• /agents — lista los agentes detectados y permite habilitarlos.",
 		"• /agents migrate — marca sesiones heredadas como opencode (compatibilidad con versiones anteriores).",
 		"• /init — rearranca el agente activo en la carpeta activa.",
@@ -183,7 +183,7 @@ func helpResponse() domain.BotResponse {
 		"• /undo — revierte el último cambio.",
 		"• /watch [sesión] — vigila la sesión activa hasta que termine.",
 		"• /continue — reactiva la última sesión completada.",
-		"• /continuar — detecta la sesión que se está ejecutando en tu Mac y te ofrece seguirla desde acá.",
+		"• /resume — detecta la sesión que se está ejecutando en tu Mac y te ofrece seguirla desde acá.",
 		"• texto libre — prompt directo a la sesión activa.",
 	}, "\n")}
 }
@@ -281,10 +281,10 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 		}
 		return h.diffForCompleted(ctx, chatID)
 	}
-	// "cn" is the /continuar callback family: cn|<chatID> confirms
-	// the freshest active session, cn|<chatID>|<kind> narrows the
+	// "rs" is the /resume callback family: rs|<chatID> confirms
+	// the freshest active session, rs|<chatID>|<kind> narrows the
 	// picker to a different agent's session before confirming.
-	if parts[0] == "cn" {
+	if parts[0] == "rs" {
 		parsed, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil || parsed != chatID {
 			return expiredNavigation(), nil
@@ -295,10 +295,10 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 		}
 		return h.continuar(ctx, chatID, kind)
 	}
-	// "cc" is the /continuar confirm action. The kind and
+	// "rsc" is the /resume confirm action. The kind and
 	// sessionID are carried in the callback so the handler does
 	// not need a per-chat cache to act on a tap.
-	if parts[0] == "cc" {
+	if parts[0] == "rsc" {
 		parsed, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil || parsed != chatID {
 			return expiredNavigation(), nil
@@ -762,13 +762,13 @@ func (h *Handler) continueLast(ctx context.Context, chatID int64) (domain.BotRes
 // or a small picker so the user can choose which session to bring
 // into Telegram.
 //
-// When called via the cn|<chatID> or cn|<chatID>|<kind> callback the
+// When called via the rs|<chatID> or rs|<chatID>|<kind> callback the
 // same flow runs, optionally narrowed to a single kind so the user
 // can drill into a specific agent's session without retyping the
 // command.
 //
 // The confirm action lives in its own callback
-// (cc|<chatID>|<kind>|<sessionID>) so the user can review the card
+// (rsc|<chatID>|<kind>|<sessionID>) so the user can review the card
 // for a few seconds before tapping without the locator being
 // re-queried in the background.
 func (h *Handler) continuar(ctx context.Context, chatID int64, narrow string) (domain.BotResponse, error) {
@@ -833,7 +833,7 @@ func (h *Handler) continuar(ctx context.Context, chatID int64, narrow string) (d
 		var row []domain.BotButton
 		for _, alt := range alternatives {
 			label := fmt.Sprintf("🔁 %s · %s", alt.Kind, orDefault(alt.Project, alt.Directory))
-			row = append(row, domain.BotButton{Text: label, Data: fmt.Sprintf("cn|%d|%s", chatID, alt.Kind)})
+			row = append(row, domain.BotButton{Text: label, Data: fmt.Sprintf("rs|%d|%s", chatID, alt.Kind)})
 		}
 		resp.Buttons = append(resp.Buttons, row)
 	}
@@ -884,14 +884,14 @@ func (h *Handler) locateAll(ctx context.Context, locators []domain.SessionLocato
 // callback stays valid even if the locator later returns a
 // different "freshest" answer.
 func (h *Handler) confirmCallback(chatID int64, sess domain.ActiveSession) string {
-	return fmt.Sprintf("cc|%d|%s|%s", chatID, sess.Kind, sess.SessionID)
+	return fmt.Sprintf("rsc|%d|%s|%s", chatID, sess.Kind, sess.SessionID)
 }
 
 // previewCallback encodes the "show me the full preview" button.
-// We reuse the cn| family because the preview is just another
-// /continuar render with the chosen kind focused.
+// We reuse the rs| family because the preview is just another
+// /resume render with the chosen kind focused.
 func (h *Handler) previewCallback(chatID int64, sess domain.ActiveSession) string {
-	return fmt.Sprintf("cn|%d|%s", chatID, sess.Kind)
+	return fmt.Sprintf("rs|%d|%s", chatID, sess.Kind)
 }
 
 // now is the time source /continuar uses for staleness and the
@@ -904,7 +904,7 @@ func (h *Handler) handlerNow() time.Time {
 	return time.Now()
 }
 
-// confirmActiveSession is the cc| callback handler. It receives the
+// confirmActiveSession is the rsc| callback handler. It receives the
 // kind+sessionID encoded in the button data, re-validates the
 // session via the matching locator (best-effort; a failure leaves
 // the state change standing because the user has already tapped),
@@ -1289,8 +1289,6 @@ func emojiForKind(kind domain.AgentKind) string {
 		return "🟢"
 	case domain.AgentClaude:
 		return "🟣"
-	case domain.AgentCodex:
-		return "⚪"
 	case domain.AgentKiro:
 		return "🟠"
 	case domain.AgentCopilot:

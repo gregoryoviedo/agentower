@@ -13,7 +13,7 @@ import (
 // SessionWatcher polls the active session in the background and
 // records a completion snapshot once it goes idle. After the
 // multi-agent migration the watcher dispatches by AgentKind:
-//   - opencode, Claude Code, Codex and Kiro expose ListMessages
+//   - opencode, Claude Code and Kiro expose ListMessages
 //     over their transport, so the watcher polls the message log
 //     and applies the same "stable for idleThreshold" heuristic.
 //   - GitHub Copilot speaks LSP and never streams a message log;

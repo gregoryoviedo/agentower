@@ -56,8 +56,8 @@ func TestActiveLocatorRegistryAddAndLookup(t *testing.T) {
 	if got, ok := reg.LocatorFor(domain.AgentClaude); !ok || got != claude {
 		t.Fatalf("LocatorFor(claude) = %v, %v", got, ok)
 	}
-	if _, ok := reg.LocatorFor(domain.AgentCodex); ok {
-		t.Fatal("LocatorFor(codex) = ok, want false")
+	if _, ok := reg.LocatorFor(domain.AgentKiro); ok {
+		t.Fatal("LocatorFor(kiro) = ok, want false")
 	}
 }
 
@@ -87,10 +87,10 @@ func TestActiveLocatorRegistryIgnoresNil(t *testing.T) {
 	}
 }
 
-func TestHandlerContinuarShowsFreshest(t *testing.T) {
+func TestHandlerResumeShowsFreshest(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	workspace := t.TempDir()
-	handler, store, reg := newContinuarFixture(t, workspace, now)
+	handler, store, reg := newResumeFixture(t, workspace, now)
 	opencodeLoc := &fakeLocator{
 		kind: domain.AgentOpenCode,
 		result: domain.ActiveSession{
@@ -121,7 +121,7 @@ func TestHandlerContinuarShowsFreshest(t *testing.T) {
 	reg.Add(claudeLoc)
 	_ = store
 
-	resp, err := handler.HandleCommand(context.Background(), 42, "/continuar", nil)
+	resp, err := handler.HandleCommand(context.Background(), 42, "/resume", nil)
 	if err != nil {
 		t.Fatalf("/continuar: %v", err)
 	}
@@ -156,9 +156,9 @@ func TestHandlerContinuarShowsFreshest(t *testing.T) {
 	}
 }
 
-func TestHandlerContinuarFiltersStale(t *testing.T) {
+func TestHandlerResumeFiltersStale(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	handler, _, reg := newContinuarFixture(t, t.TempDir(), now)
+	handler, _, reg := newResumeFixture(t, t.TempDir(), now)
 	// Set a 5-minute staleness window.
 	handler.SetStaleAfter(5 * time.Minute)
 	reg.Add(&fakeLocator{
@@ -170,7 +170,7 @@ func TestHandlerContinuarFiltersStale(t *testing.T) {
 			TouchedAt: now.Add(-30 * time.Minute),
 		},
 	})
-	resp, err := handler.HandleCommand(context.Background(), 42, "/continuar", nil)
+	resp, err := handler.HandleCommand(context.Background(), 42, "/resume", nil)
 	if err != nil {
 		t.Fatalf("/continuar: %v", err)
 	}
@@ -182,9 +182,9 @@ func TestHandlerContinuarFiltersStale(t *testing.T) {
 	}
 }
 
-func TestHandlerContinuarIgnoresLocatorErrors(t *testing.T) {
+func TestHandlerResumeIgnoresLocatorErrors(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	handler, _, reg := newContinuarFixture(t, t.TempDir(), now)
+	handler, _, reg := newResumeFixture(t, t.TempDir(), now)
 	reg.Add(&fakeLocator{kind: domain.AgentOpenCode, err: errors.New("boom")})
 	reg.Add(&fakeLocator{
 		kind: domain.AgentClaude,
@@ -195,7 +195,7 @@ func TestHandlerContinuarIgnoresLocatorErrors(t *testing.T) {
 			TouchedAt: now.Add(-10 * time.Second),
 		},
 	})
-	resp, err := handler.HandleCommand(context.Background(), 42, "/continuar", nil)
+	resp, err := handler.HandleCommand(context.Background(), 42, "/resume", nil)
 	if err != nil {
 		t.Fatalf("/continuar: %v", err)
 	}
@@ -204,9 +204,9 @@ func TestHandlerContinuarIgnoresLocatorErrors(t *testing.T) {
 	}
 }
 
-func TestHandlerContinuarNarrowByKind(t *testing.T) {
+func TestHandlerResumeNarrowByKind(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	handler, _, reg := newContinuarFixture(t, t.TempDir(), now)
+	handler, _, reg := newResumeFixture(t, t.TempDir(), now)
 	ocLoc := &fakeLocator{
 		kind: domain.AgentOpenCode,
 		result: domain.ActiveSession{
@@ -228,7 +228,7 @@ func TestHandlerContinuarNarrowByKind(t *testing.T) {
 	reg.Add(ocLoc)
 	reg.Add(clLoc)
 
-	resp, err := handler.HandleCommand(context.Background(), 42, "/continuar", nil)
+	resp, err := handler.HandleCommand(context.Background(), 42, "/resume", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestHandlerContinuarNarrowByKind(t *testing.T) {
 		t.Fatalf("expected freshest claude session, got: %q", resp.Text)
 	}
 	// Narrowing via callback re-runs with one locator.
-	resp, err = handler.HandleCallback(context.Background(), 42, "cn|42|opencode")
+	resp, err = handler.HandleCallback(context.Background(), 42, "rs|42|opencode")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,10 +248,10 @@ func TestHandlerContinuarNarrowByKind(t *testing.T) {
 	}
 }
 
-func TestHandlerContinuarCallbackConfirm(t *testing.T) {
+func TestHandlerResumeCallbackConfirm(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	workspace := t.TempDir()
-	handler, store, reg := newContinuarFixture(t, workspace, now)
+	handler, store, reg := newResumeFixture(t, workspace, now)
 	reg.Add(&fakeLocator{
 		kind: domain.AgentClaude,
 		result: domain.ActiveSession{
@@ -262,7 +262,7 @@ func TestHandlerContinuarCallbackConfirm(t *testing.T) {
 			TouchedAt: now.Add(-5 * time.Second),
 		},
 	})
-	resp, err := handler.HandleCallback(context.Background(), 42, "cc|42|claude|ses_to_confirm")
+	resp, err := handler.HandleCallback(context.Background(), 42, "rsc|42|claude|ses_to_confirm")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,13 +281,13 @@ func TestHandlerContinuarCallbackConfirm(t *testing.T) {
 	}
 }
 
-func TestHandlerContinuarCallbackRejectsForeignChat(t *testing.T) {
+func TestHandlerResumeCallbackRejectsForeignChat(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	handler, _, reg := newContinuarFixture(t, t.TempDir(), now)
+	handler, _, reg := newResumeFixture(t, t.TempDir(), now)
 	reg.Add(&fakeLocator{kind: domain.AgentClaude, result: domain.ActiveSession{
 		Kind: domain.AgentClaude, SessionID: "x", TouchedAt: now,
 	}})
-	resp, err := handler.HandleCallback(context.Background(), 99, "cc|42|claude|x")
+	resp, err := handler.HandleCallback(context.Background(), 99, "rsc|42|claude|x")
 	if err != nil {
 		t.Fatal(err)
 	}

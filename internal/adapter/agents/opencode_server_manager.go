@@ -9,7 +9,7 @@ import (
 
 // opencodeServerManager adapts the existing single-agent opencode.Manager
 // to the multi-agent AgentServerManager surface for the opencode slot.
-// Stdio-based agents (Claude, Codex, Kiro, Copilot) will use a more
+// Stdio-based agents (Claude, Kiro, Copilot) will use a more
 // generic subprocess.Manager when their adapters land in later PRs.
 type opencodeServerManager struct {
 	mgr *agents_opencode.Manager

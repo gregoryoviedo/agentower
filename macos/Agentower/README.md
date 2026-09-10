@@ -4,7 +4,7 @@ Swift wrapper alrededor del binario Go `remote-bot`. Vive en la barra de
 menús (junto a Wi-Fi/Bluetooth/AirDrop), reproduce el patrón click → popover
 con toggle estilo Bluetooth, y arranca/detiene el bot según el estado del
 switch. La sección **Agentes de IA** del Settings detecta los CLIs
-(opencode, Claude, Codex, Kiro, GitHub Copilot) instalados en PATH o en
+(opencode, Claude, Kiro, GitHub Copilot) instalados en PATH o en
 las extensiones de VS Code para que el usuario habilite los que quiera
 usar antes de arrancar el bot.
 
@@ -66,7 +66,7 @@ estilo Bluetooth con un toggle. Click derecho abre menú contextual.
 **Primera vez**: el toggle está deshabilitado. Click en **Settings…**, llena
 `WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN`, `ALLOWED_CHAT_ID`. La sección
 **Agentes de IA** muestra qué CLIs detectó en PATH (botón "Reintentar
-detección" para refrescar) y te permite habilitar opencode, Claude, Codex,
+detección" para refrescar) y te permite habilitar opencode, Claude,
 Kiro o Copilot individualmente. Al guardar, la app escribe
 `~/Library/Application Support/Agentower/.env` con permisos `0600` y a
 partir de ahí el toggle funciona.

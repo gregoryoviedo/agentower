@@ -15,7 +15,7 @@ descarta silenciosamente, sin error ni eco, en el middleware de
 - **Inbound**: únicamente la API de Telegram mediante long polling. El
   binario no abre ningún socket.
 - **Outbound**: el agente activo. Por defecto `127.0.0.1:4096`
-  para hablar con `opencode serve`; en sesiones de Claude/Codex/Kiro
+  para hablar con `opencode serve`; en sesiones de Claude/Kiro
   el bot abre pipes stdin/stdout contra el binario del usuario; con
   Copilot habla JSON-RPC sobre stdio con el language server. El polling
   a Telegram siempre va contra `api.telegram.org` (o el override de

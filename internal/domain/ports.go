@@ -27,14 +27,13 @@ type NavigationRepository interface {
 }
 
 // AgentKind identifies which AI agent the bot is talking to for a given
-// chat/project. Every concrete adapter (opencode, claude, codex, kiro,
+// chat/project. Every concrete adapter (opencode, claude, kiro,
 // copilot) declares its kind and the registry uses it to dispatch.
 type AgentKind string
 
 const (
 	AgentOpenCode AgentKind = "opencode"
 	AgentClaude   AgentKind = "claude"
-	AgentCodex    AgentKind = "codex"
 	AgentKiro     AgentKind = "kiro"
 	AgentCopilot  AgentKind = "copilot"
 )
@@ -43,7 +42,7 @@ const (
 // appear in the Telegram picker. Stable order keeps the picker layout
 // deterministic between renders.
 func AllAgentKinds() []AgentKind {
-	return []AgentKind{AgentOpenCode, AgentClaude, AgentCodex, AgentKiro, AgentCopilot}
+	return []AgentKind{AgentOpenCode, AgentClaude, AgentKiro, AgentCopilot}
 }
 
 // AgentCapabilities describes which features an adapter currently
@@ -76,7 +75,7 @@ type AgentDescriptor struct {
 }
 
 // AgentAdapter is the per-agent transport (HTTP, stdio JSON-RPC, LSP,
-// etc.). Every concrete adapter — opencode/claude/codex/kiro/copilot
+// etc.). Every concrete adapter — opencode/claude/kiro/copilot
 // — implements this surface and the registry uses Kind() to route
 // commands to the right instance.
 type AgentAdapter interface {

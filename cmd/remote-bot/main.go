@@ -15,7 +15,6 @@ import (
 
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/claude"
-	"github.com/gregoryoviedo/agentower/internal/adapter/agents/codex"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/copilot"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/kiro"
 	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
@@ -81,7 +80,6 @@ func main() {
 		Logger: logger.With("component", "opencode-server"),
 	})
 	claudeManager := claude.NewManager("claude", agents.DefaultClaudePort)
-	codexManager := codex.NewManager("codex", agents.DefaultCodexPort)
 	kiroManager := kiro.NewManager("kiro", agents.DefaultKiroPort)
 	copilotDescriptor := findCopilotDescriptor(descriptors)
 	copilotManager := copilot.NewManager(copilotLaunchConfig(copilotDescriptor))
@@ -99,11 +97,6 @@ func main() {
 	if hasDetectedClaude(descriptors) {
 		registry.Register(domain.AgentClaude, func() (domain.AgentAdapter, error) {
 			return claude.NewAdapter(claudeManager), nil
-		})
-	}
-	if hasDetectedCodex(descriptors) {
-		registry.Register(domain.AgentCodex, func() (domain.AgentAdapter, error) {
-			return codex.NewAdapter(codexManager), nil
 		})
 	}
 	if hasDetectedKiro(descriptors) {
@@ -124,7 +117,6 @@ func main() {
 	}
 	serverManager := agents.NewOpenCodeServerManager(opencodeManager)
 	_ = claudeManager  // kept alive for the lifetime of the bot; sessions spawn on first use
-	_ = codexManager   // same: spawned per session on first use
 	_ = kiroManager    // same
 	_ = copilotManager // same: lazily dials the LSP server on first use
 
@@ -147,6 +139,16 @@ func main() {
 			locators.Add(claudeLoc)
 		} else {
 			logger.Warn("build claude locator", "error", err)
+		}
+	}
+	if hasDetectedKiro(descriptors) {
+		kiroLoc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{
+			StateDir: cfg.KiroStateDir,
+		})
+		if err == nil {
+			locators.Add(kiroLoc)
+		} else {
+			logger.Warn("build kiro locator", "error", err)
 		}
 	}
 	if copilotDescriptor.Bin != "" {
@@ -228,16 +230,6 @@ func main() {
 func hasDetectedClaude(descriptors []domain.AgentDescriptor) bool {
 	for _, d := range descriptors {
 		if d.Kind == domain.AgentClaude && d.Available {
-			return true
-		}
-	}
-	return false
-}
-
-// hasDetectedCodex mirrors hasDetectedClaude for the codex adapter.
-func hasDetectedCodex(descriptors []domain.AgentDescriptor) bool {
-	for _, d := range descriptors {
-		if d.Kind == domain.AgentCodex && d.Available {
 			return true
 		}
 	}

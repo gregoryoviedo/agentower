@@ -89,7 +89,7 @@ func TestOpenCodeServerManagerStartAcceptsOnlyOpenCode(t *testing.T) {
 	})
 	sm := NewOpenCodeServerManager(mgr)
 	for _, kind := range []domain.AgentKind{
-		domain.AgentClaude, domain.AgentCodex,
+		domain.AgentClaude, domain.AgentKiro,
 		domain.AgentKiro, domain.AgentCopilot,
 	} {
 		if err := sm.Start(context.Background(), kind, t.TempDir()); !errors.Is(err, domain.ErrAgentUnavailable) {
@@ -127,8 +127,8 @@ func TestOpenCodeServerManagerDelegatesToUnderlyingManager(t *testing.T) {
 	if sm.WorkingDir(domain.AgentOpenCode) == "" {
 		t.Fatal("WorkingDir(OpenCode) is empty after Start")
 	}
-	if got := sm.WorkingDir(domain.AgentCodex); got != "" {
-		t.Fatalf("WorkingDir(Codex) = %q, want empty", got)
+	if got := sm.WorkingDir(domain.AgentKiro); got != "" {
+		t.Fatalf("WorkingDir(Kiro) = %q, want empty", got)
 	}
 	sm.Stop(domain.AgentOpenCode)
 	if sm.StartedSubprocess(domain.AgentOpenCode) {

@@ -39,7 +39,6 @@ internal/
     agents/
       opencode/   cliente REST + manager del subproceso
       claude/     stdio JSON contra `claude --print --output-format stream-json`
-      codex/      stdio JSON contra `codex exec --json`
       kiro/       stdio JSON contra `kiro chat --session ...`
       copilot/    cliente LSP JSON-RPC 2.0 contra `copilot --stdio`
       detector.go PATH + bundle probing
@@ -92,7 +91,7 @@ pequeña y cubrir cada rama en el test.
    `internal/domain/ports.go` (sólo si todavía no existe).
 2. Implementa el método en el adapter concreto:
    `internal/adapter/agents/<kind>/` (opencode usa HTTP REST + manager;
-   Claude/Codex/Kiro usan stdio JSON; Copilot usa LSP). Si el endpoint
+   Claude/Kiro usan stdio JSON; Copilot usa LSP). Si el endpoint
    es un stream, usa un cliente HTTP sin timeout; si es una operación
    normal, usa el cliente con `Timeout`.
 3. Marca la capacidad en el `scan<Agent>` del detector

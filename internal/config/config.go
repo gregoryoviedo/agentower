@@ -23,6 +23,7 @@ type Config struct {
 	StaleAfter      time.Duration
 	CopilotStateDir string
 	ClaudeStateDir  string
+	KiroStateDir    string
 }
 
 func Load() (*Config, error) {
@@ -67,6 +68,7 @@ func Load() (*Config, error) {
 	cfg.StaleAfter = parseDurationEnv("AGENTOWER_STALE_AFTER", 30*time.Minute)
 	cfg.CopilotStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_COPILOT_STATE_DIR"))
 	cfg.ClaudeStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_CLAUDE_STATE_DIR"))
+	cfg.KiroStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_KIRO_STATE_DIR"))
 
 	return cfg, nil
 }

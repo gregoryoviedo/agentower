@@ -1,6 +1,6 @@
 // Package agents owns the multi-agent surface: detector, registry,
 // subprocess manager and one adapter per AI agent (opencode today;
-// claude, codex, kiro and copilot in later PRs).
+// claude, kiro and copilot ship as well).
 package agents
 
 import (
@@ -17,7 +17,6 @@ import (
 const (
 	DefaultOpenCodePort = 4096
 	DefaultClaudePort   = 4097
-	DefaultCodexPort    = 4098
 	DefaultKiroPort     = 4099
 	DefaultCopilotPort  = 4100
 )
@@ -55,8 +54,6 @@ func (d *Detector) scanOne(ctx context.Context, kind domain.AgentKind) domain.Ag
 		return d.scanOpenCode(ctx)
 	case domain.AgentClaude:
 		return d.scanClaude(ctx)
-	case domain.AgentCodex:
-		return d.scanCodex(ctx)
 	case domain.AgentKiro:
 		return d.scanKiro(ctx)
 	case domain.AgentCopilot:
@@ -113,33 +110,6 @@ func (d *Detector) scanClaude(ctx context.Context) domain.AgentDescriptor {
 		desc.Reason = "no se encontró el binario claude en PATH"
 	}
 	desc.Running = d.detectPortOpen(ctx, DefaultClaudePort, "/") // best-effort HTTP probe
-	return desc
-}
-
-func (d *Detector) scanCodex(ctx context.Context) domain.AgentDescriptor {
-	bin, _ := d.LookPath("codex")
-	desc := domain.AgentDescriptor{
-		Kind:        domain.AgentCodex,
-		DisplayName: "Codex",
-		Bin:         bin,
-		Port:        DefaultCodexPort,
-		Detected:    bin != "",
-		Available:   bin != "",
-		Capabilities: domain.AgentCapabilities{
-			Health:        true,
-			ListProjects:  false,
-			ListSessions:  false, // Codex CLI does not yet expose a session index
-			CreateSession: true,
-			SendPrompt:    true,
-			Revert:        false,
-			FileStatus:    true,
-			ListMessages:  false,
-		},
-	}
-	if bin == "" {
-		desc.Reason = "no se encontró el binario codex en PATH"
-	}
-	desc.Running = d.detectPortOpen(ctx, DefaultCodexPort, "/")
 	return desc
 }
 

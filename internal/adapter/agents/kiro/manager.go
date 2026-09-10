@@ -4,7 +4,7 @@
 // adapter ships in a deliberately minimal posture: SendPrompt and
 // Health only, with every other capability returning
 // ErrAgentCapabilitiesLimited so the Telegram UI hides the
-// corresponding buttons. The wire format mirrors the Claude / Codex
+// corresponding buttons. The wire format mirrors the Claude
 // adapter (newline-delimited JSON over stdio) so when Kiro exposes a
 // real protocol the migration path is clear.
 package kiro

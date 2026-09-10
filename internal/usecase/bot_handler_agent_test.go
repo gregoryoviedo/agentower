@@ -69,7 +69,7 @@ func TestAgentsCommandShowsAllKnownAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("/agents: %v", err)
 	}
-	for _, name := range []string{"opencode", "Claude", "Codex", "Kiro", "GitHub Copilot"} {
+	for _, name := range []string{"opencode", "Claude", "Kiro", "GitHub Copilot"} {
 		if !strings.Contains(resp.Text, name) {
 			t.Errorf("/agents output should mention %s, got %q", name, resp.Text)
 		}
@@ -100,15 +100,14 @@ func TestAgentsMigrateReportsNothingToDoWhenColumnPopulated(t *testing.T) {
 	}
 }
 
-// multiRegistry exposes all 5 known agents but marks only opencode as
-// Available, mirroring PR-1's posture.
+// multiRegistry exposes all 4 known agents but marks only opencode as
+// Available, mirroring the boot-time posture.
 type multiRegistry struct{}
 
 func (r *multiRegistry) Descriptors() []domain.AgentDescriptor {
 	return []domain.AgentDescriptor{
 		{Kind: domain.AgentOpenCode, DisplayName: "opencode", Detected: true, Available: true},
 		{Kind: domain.AgentClaude, DisplayName: "Claude", Detected: true, Available: false, Reason: "Próximamente"},
-		{Kind: domain.AgentCodex, DisplayName: "Codex", Detected: true, Available: false, Reason: "Próximamente"},
 		{Kind: domain.AgentKiro, DisplayName: "Kiro", Detected: true, Available: false, Reason: "Próximamente"},
 		{Kind: domain.AgentCopilot, DisplayName: "GitHub Copilot", Detected: true, Available: false, Reason: "Próximamente"},
 	}
