@@ -51,7 +51,7 @@ On macOS the wrapper is the convenient launcher:
   adapter.
 - Commands: `/start`, `/help`, `/status`, `/projects`, `/agent`,
   `/agents`, `/agents migrate`, `/init`, `/sessions`, `/diff`,
-  `/changes`, `/undo`, `/watch`, `/continue`.
+  `/changes`, `/undo`, `/watch`, `/continue`, `/continuar`.
 - Free-form text prompts forwarded to the active agent.
 - SQLite-backed runtime state (workspace, project, session, agent,
   navigation).
@@ -143,20 +143,28 @@ On macOS the wrapper is the convenient launcher:
 
 Items in priority order, intentionally small and incremental:
 
-1. Streaming replies: surface the assistant text part-by-part in
+1. Multi-agent SessionWatcher: generalize the polling loop so the
+   "task done" notification and `/continuar` work for Claude Code
+   and GitHub Copilot, not only opencode (today the watcher is
+   opencode-only; the `/continuar` locator fan-out is in place but
+   completion still only fires for opencode).
+2. Streaming replies: surface the assistant text part-by-part in
    Telegram as the agent emits it (today we wait for the final event).
-2. Pinned live status message (project, session, agent, changed files).
-3. Persistent reply keyboard with the most common actions.
-4. Auto-restart of the active agent when health checks fail.
-5. Scheduled tasks (`/task`, `/tasklist`).
-6. Voice transcription via a Whisper-compatible API (opt-in).
-7. `TELEGRAM_FORCE_IPV4` and richer proxy options for restricted networks
+3. Pinned live status message (project, session, agent, changed files).
+4. Persistent reply keyboard with the most common actions.
+5. Auto-restart of the active agent when health checks fail.
+6. Scheduled tasks (`/task`, `/tasklist`).
+7. Voice transcription via a Whisper-compatible API (opt-in).
+8. `TELEGRAM_FORCE_IPV4` and richer proxy options for restricted networks
    (today only `TELEGRAM_PROXY_URL` is supported).
-8. Swift unit tests for `ConfigStore`, `AppState` and
+9. Swift unit tests for `ConfigStore`, `AppState` and
    `LoginItemManager` to lock in the wrapper behaviour without a
    manual QA cycle.
-9. Branch-specific agent overrides (different agents for different
-   git branches on the same project).
+10. Branch-specific agent overrides (different agents for different
+    git branches on the same project).
+11. Kiro `SessionLocator`: ship when Kiro's session storage path is
+    documented. The adapter and detector already support Kiro; the
+    locator is the only piece missing.
 
 ## Change policy
 

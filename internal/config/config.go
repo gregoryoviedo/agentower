@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -19,6 +20,9 @@ type Config struct {
 	TelegramProxy   string
 	AllowedChatID   int64
 	EnvFile         string
+	StaleAfter      time.Duration
+	CopilotStateDir string
+	ClaudeStateDir  string
 }
 
 func Load() (*Config, error) {
@@ -60,7 +64,27 @@ func Load() (*Config, error) {
 	}
 	cfg.AllowedChatID = chatID
 
+	cfg.StaleAfter = parseDurationEnv("AGENTOWER_STALE_AFTER", 30*time.Minute)
+	cfg.CopilotStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_COPILOT_STATE_DIR"))
+	cfg.ClaudeStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_CLAUDE_STATE_DIR"))
+
 	return cfg, nil
+}
+
+// parseDurationEnv reads a duration env var, falling back to def
+// when unset or unparseable. Negative or zero values are clamped to
+// the default so a typo in the .env cannot accidentally disable the
+// staleness filter.
+func parseDurationEnv(key string, def time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
 
 func locateEnv() (string, bool) {

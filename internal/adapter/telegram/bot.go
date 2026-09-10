@@ -128,7 +128,7 @@ func (b *Bot) SendResponse(ctx context.Context, chatID int64, response domain.Bo
 
 func (b *Bot) register(allowedChatID int64) {
 	authorized := middleware.Whitelist(allowedChatID)
-	commands := []string{"/start", "/help", "/status", "/projects", "/agent", "/agents", "/init", "/sessions", "/diff", "/changes", "/undo", "/watch", "/continue"}
+	commands := []string{"/start", "/help", "/status", "/projects", "/agent", "/agents", "/init", "/sessions", "/diff", "/changes", "/undo", "/watch", "/continue", "/continuar"}
 	for _, command := range commands {
 		command := command
 		b.client.Handle(command, func(c tele.Context) error {

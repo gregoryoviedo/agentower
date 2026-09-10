@@ -134,9 +134,37 @@ func main() {
 
 	navigation := usecase.NewNavigationService(browser, repository)
 	publisher := control.NewPublisher()
+	locators := usecase.NewActiveLocatorRegistry()
+	if opencodeDescriptor.Available {
+		locators.Add(agents_opencode.NewSessionLocator(opencodeClient))
+	}
+	if hasDetectedClaude(descriptors) {
+		claudeLoc, err := claude.NewSessionLocator(claude.SessionLocatorOptions{
+			Workdir:  claudeManager.WorkingDir(),
+			StateDir: cfg.ClaudeStateDir,
+		})
+		if err == nil {
+			locators.Add(claudeLoc)
+		} else {
+			logger.Warn("build claude locator", "error", err)
+		}
+	}
+	if copilotDescriptor.Bin != "" {
+		copilotLoc, err := copilot.NewSessionLocator(copilot.SessionLocatorOptions{
+			StateDir: cfg.CopilotStateDir,
+		})
+		if err == nil {
+			locators.Add(copilotLoc)
+		} else {
+			logger.Warn("build copilot locator", "error", err)
+		}
+	}
+
 	handler := usecase.NewHandler(navigation, repository, registry, serverManager, browser)
 	handler.SetSessionEventLog(repository)
 	handler.SetSnapshotPublisher(publisher)
+	handler.SetActiveLocators(locators)
+	handler.SetStaleAfter(cfg.StaleAfter)
 
 	watcher := usecase.NewSessionWatcher(opencodeClient, repository, repository, publisher, usecase.SessionWatcherOptions{
 		PollInterval:  5 * time.Second,

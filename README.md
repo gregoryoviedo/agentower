@@ -165,6 +165,9 @@ Sea como sea, el bot siempre apaga el servidor con `SIGTERM` cuando recibe
 | `/sessions`            | Lista o crea sesiones del proyecto y agente activos. Acepta `new` (crea y activa) o un `id` de sesión. |
 | `/diff` / `/changes`   | Archivos modificados por la sesión activa.              |
 | `/undo`                | Revierte el último cambio.                              |
+| `/watch [sesión]`      | Vigila la sesión activa (o la pasada por id) hasta que termine. |
+| `/continue`            | Reactiva la última sesión completada.                    |
+| `/continuar`           | Detecta la sesión que se está ejecutando en tu Mac y te ofrece seguirla desde Telegram. |
 | texto libre            | Prompt directo a la sesión activa del agente.            |
 
 Los Inline Keyboards manejan el resto: carpetas, "Atrás", "Inicio", "Usar

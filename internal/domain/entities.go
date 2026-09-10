@@ -110,6 +110,22 @@ type Snapshot struct {
 	PendingNotifChat int64
 }
 
+// ActiveSession is the projection of "what is running on the Mac right
+// now" for a single agent. The /continuar handler asks every
+// SessionLocator for an ActiveSession and renders the freshest one as
+// the suggestion. The optional fields (Title, Preview) are best-effort
+// hints the locator may fill in from on-disk metadata.
+type ActiveSession struct {
+	Kind      AgentKind
+	SessionID string
+	Project   string // basename of the directory, e.g. "agentower"
+	Directory string // absolute path to the project root
+	Title     string
+	Preview   string
+	TouchedAt time.Time
+	Source    string // "http", "jsonl", "fs" — diagnostic only
+}
+
 type BotButton struct {
 	Text string
 	Data string

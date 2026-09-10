@@ -177,6 +177,31 @@ type IdleMonitor interface {
 	LastInputAt(ctx context.Context) (time.Time, error)
 }
 
+// SessionLocator is the per-agent side of "what session is currently
+// running on the machine". Each adapter knows where its active session
+// metadata lives (opencode: HTTP API; claude code: ~/.claude JSONL;
+// copilot: VS Code globalStorage). The /continuar handler asks every
+// registered locator, filters out stale and missing results, and shows
+// the freshest one.
+type SessionLocator interface {
+	Kind() AgentKind
+	// Locate returns the most recently active session for this agent.
+	// Implementations MUST return ErrNoActiveSession when the user is
+	// not driving this agent right now; any other error is treated as
+	// a transient failure and the locator is skipped.
+	Locate(ctx context.Context) (ActiveSession, error)
+}
+
+// ActiveLocatorRegistry is the facade over the set of SessionLocators
+// the bot has wired. The composition root calls Add once per agent
+// during boot; the /continuar handler iterates over Locators() in
+// parallel. Tests can call Add themselves to wire fakes.
+type ActiveLocatorRegistry interface {
+	Add(locator SessionLocator)
+	Locators() []SessionLocator
+	LocatorFor(kind AgentKind) (SessionLocator, bool)
+}
+
 type BotHandler interface {
 	HandleCommand(ctx context.Context, chatID int64, command string, args []string) (BotResponse, error)
 	HandleText(ctx context.Context, chatID int64, text string) (BotResponse, error)

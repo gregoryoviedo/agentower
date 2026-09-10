@@ -16,4 +16,6 @@ var (
 	ErrAgentCapabilitiesLimited = errors.New("agent does not support this operation")
 	ErrUnknownAgentKind         = errors.New("unknown agent kind")
 	ErrMigrationNotNeeded       = errors.New("no sessions need to be migrated")
+	ErrNoActiveSession          = errors.New("no active session for this agent")
+	ErrStaleSession             = errors.New("active session is stale")
 )

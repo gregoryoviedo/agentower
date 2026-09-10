@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,7 +30,10 @@ type Handler struct {
 	watcher       SessionController
 	events        domain.SessionEventLog
 	snapshot      domain.SnapshotPublisher
+	locators      domain.ActiveLocatorRegistry
 	workspaceRoot string
+	staleAfter    time.Duration
+	now           func() time.Time
 }
 
 // SessionController is the surface Handler needs from the SessionWatcher.
@@ -60,6 +64,8 @@ func NewHandler(navigation *NavigationService, state domain.StateRepository, reg
 		manager:       manager,
 		browser:       browser,
 		workspaceRoot: browser.Root(),
+		staleAfter:    defaultStaleAfter,
+		now:           time.Now,
 	}
 }
 
@@ -70,6 +76,35 @@ func (h *Handler) SetSessionEventLog(log domain.SessionEventLog) { h.events = lo
 // SetSnapshotPublisher wires the in-process snapshot store so the handler
 // can mark notifications as pending whenever a prompt finishes.
 func (h *Handler) SetSnapshotPublisher(s domain.SnapshotPublisher) { h.snapshot = s }
+
+// SetActiveLocators wires the registry of SessionLocators the /continuar
+// command fans out to. Passing nil disables the command (it returns the
+// "no locator available" message).
+func (h *Handler) SetActiveLocators(r domain.ActiveLocatorRegistry) { h.locators = r }
+
+// SetStaleAfter overrides the staleness threshold used by /continuar.
+// Sessions whose TouchedAt is older than the threshold are filtered out
+// so the user is not offered a chat that finished hours ago.
+func (h *Handler) SetStaleAfter(d time.Duration) {
+	if d > 0 {
+		h.staleAfter = d
+	}
+}
+
+// SetClock replaces the function the handler uses to read the
+// current time. Production code keeps the default (time.Now);
+// tests inject a fixed clock so the "hace Xs" text and the stale
+// filter behave deterministically.
+func (h *Handler) SetClock(now func() time.Time) {
+	if now != nil {
+		h.now = now
+	}
+}
+
+// defaultStaleAfter is the freshness window /continuar uses when the
+// composition root does not override it. Generous enough to cover a
+// lunch break without including abandoned chats from the previous day.
+const defaultStaleAfter = 30 * time.Minute
 
 // StateForTest exposes the underlying StateRepository to tests in the same
 // package. Production code must depend on the Handler port instead.
@@ -116,6 +151,8 @@ func (h *Handler) HandleCommand(ctx context.Context, chatID int64, command strin
 		return h.undo(ctx, chatID)
 	case "/continue":
 		return h.continueLast(ctx, chatID)
+	case "/continuar":
+		return h.continuar(ctx, chatID, "")
 	case "/watch":
 		return h.watch(ctx, chatID, args)
 	default:
@@ -138,6 +175,7 @@ func helpResponse() domain.BotResponse {
 		"• /undo — revierte el último cambio.",
 		"• /watch [sesión] — vigila la sesión activa hasta que termine.",
 		"• /continue — reactiva la última sesión completada.",
+		"• /continuar — detecta la sesión que se está ejecutando en tu Mac y te ofrece seguirla desde acá.",
 		"• texto libre — prompt directo a la sesión activa.",
 	}, "\n")}
 }
@@ -216,7 +254,7 @@ func truncateForTelegram(text string, kind domain.AgentKind) string {
 }
 
 func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string) (domain.BotResponse, error) {
-	parts := strings.SplitN(data, "|", 3)
+	parts := strings.Split(data, "|")
 	if len(parts) < 2 {
 		return expiredNavigation(), nil
 	}
@@ -233,6 +271,33 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 			return h.continueLast(ctx, chatID)
 		}
 		return h.diffForCompleted(ctx, chatID)
+	}
+	// "cn" is the /continuar callback family: cn|<chatID> confirms
+	// the freshest active session, cn|<chatID>|<kind> narrows the
+	// picker to a different agent's session before confirming.
+	if parts[0] == "cn" {
+		parsed, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || parsed != chatID {
+			return expiredNavigation(), nil
+		}
+		kind := ""
+		if len(parts) == 3 {
+			kind = parts[2]
+		}
+		return h.continuar(ctx, chatID, kind)
+	}
+	// "cc" is the /continuar confirm action. The kind and
+	// sessionID are carried in the callback so the handler does
+	// not need a per-chat cache to act on a tap.
+	if parts[0] == "cc" {
+		parsed, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || parsed != chatID {
+			return expiredNavigation(), nil
+		}
+		if len(parts) != 4 {
+			return expiredNavigation(), nil
+		}
+		return h.confirmActiveSession(ctx, chatID, parts[2], parts[3])
 	}
 	switch parts[0] {
 	case "e":
@@ -680,6 +745,220 @@ func (h *Handler) continueLast(ctx context.Context, chatID int64) (domain.BotRes
 		Text: fmt.Sprintf("Sesión `%s` reactivada.\nProyecto: `%s`\n%s",
 			snapshot.SessionID, orDefault(snapshot.ProjectName, snapshot.Directory), preview),
 	}, nil
+}
+
+// continuar is the /continuar handler. It asks every registered
+// SessionLocator for the active session on the machine, filters out
+// stale and missing results, and renders either a single suggestion
+// or a small picker so the user can choose which session to bring
+// into Telegram.
+//
+// When called via the cn|<chatID> or cn|<chatID>|<kind> callback the
+// same flow runs, optionally narrowed to a single kind so the user
+// can drill into a specific agent's session without retyping the
+// command.
+//
+// The confirm action lives in its own callback
+// (cc|<chatID>|<kind>|<sessionID>) so the user can review the card
+// for a few seconds before tapping without the locator being
+// re-queried in the background.
+func (h *Handler) continuar(ctx context.Context, chatID int64, narrow string) (domain.BotResponse, error) {
+	if h.locators == nil {
+		return domain.BotResponse{Text: "No hay locators configurados. Reconstruye el bot con al menos un agente detectado."}, nil
+	}
+	locators := h.locators.Locators()
+	if len(locators) == 0 {
+		return domain.BotResponse{Text: "No hay agentes con locator activo. Instalá opencode, Claude Code o GitHub Copilot."}, nil
+	}
+	if narrow != "" {
+		filtered := locators[:0]
+		for _, l := range locators {
+			if string(l.Kind()) == narrow {
+				filtered = append(filtered, l)
+			}
+		}
+		locators = filtered
+		if len(locators) == 0 {
+			return domain.BotResponse{Text: fmt.Sprintf("No hay locator para `%s`.", narrow)}, nil
+		}
+	}
+	active, err := h.locateAll(ctx, locators)
+	if err != nil {
+		return domain.BotResponse{}, err
+	}
+	if len(active) == 0 {
+		return domain.BotResponse{Text: "No detecté sesiones activas en tu Mac. Asegurate de tener opencode, Claude Code o GitHub Copilot ejecutándose."}, nil
+	}
+	sort.Slice(active, func(i, j int) bool {
+		return active[i].TouchedAt.After(active[j].TouchedAt)
+	})
+	primary := active[0]
+	alternatives := active[1:]
+
+	preview := primary.Preview
+	if preview == "" {
+		preview = "Sin previsualización."
+	}
+	var b strings.Builder
+	b.WriteString("Sesión activa en tu Mac:\n\n")
+	fmt.Fprintf(&b, "• Agente: `%s`\n", primary.Kind)
+	fmt.Fprintf(&b, "• Proyecto: `%s`\n", orDefault(primary.Project, primary.Directory))
+	fmt.Fprintf(&b, "• Sesión: `%s`\n", truncateID(primary.SessionID))
+	if !primary.TouchedAt.IsZero() {
+		fmt.Fprintf(&b, "• Última actividad: hace %s\n\n", humanizeSince(primary.TouchedAt, h.handlerNow()))
+	} else {
+		b.WriteString("\n")
+	}
+	b.WriteString(preview)
+	b.WriteString("\n\n¿Querés continuar desde acá?")
+	resp := domain.BotResponse{Text: b.String()}
+	resp.Buttons = append(resp.Buttons, []domain.BotButton{
+		{Text: "✅ Sí, continuar", Data: h.confirmCallback(chatID, primary)},
+	})
+	if preview != "Sin previsualización." && preview != "" {
+		resp.Buttons = append(resp.Buttons, []domain.BotButton{
+			{Text: "📝 Ver preview", Data: h.previewCallback(chatID, primary)},
+		})
+	}
+	if len(alternatives) > 0 {
+		var row []domain.BotButton
+		for _, alt := range alternatives {
+			label := fmt.Sprintf("🔁 %s · %s", alt.Kind, orDefault(alt.Project, alt.Directory))
+			row = append(row, domain.BotButton{Text: label, Data: fmt.Sprintf("cn|%d|%s", chatID, alt.Kind)})
+		}
+		resp.Buttons = append(resp.Buttons, row)
+	}
+	resp.Buttons = append(resp.Buttons, []domain.BotButton{{Text: "❌ Cancelar", Data: "noop"}})
+	return resp, nil
+}
+
+// locateAll fans out to every locator in parallel with a 3-second
+// deadline. Locators that return ErrNoActiveSession or stale entries
+// are silently filtered; the caller gets the surviving set sorted
+// by freshness (the caller is responsible for the final sort so it
+// can interleave additional logic).
+func (h *Handler) locateAll(ctx context.Context, locators []domain.SessionLocator) ([]domain.ActiveSession, error) {
+	type result struct {
+		session domain.ActiveSession
+		err     error
+	}
+	ch := make(chan result, len(locators))
+	locCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	for _, loc := range locators {
+		loc := loc
+		go func() {
+			sess, err := loc.Locate(locCtx)
+			ch <- result{session: sess, err: err}
+		}()
+	}
+	now := h.handlerNow()
+	out := make([]domain.ActiveSession, 0, len(locators))
+	for range locators {
+		r := <-ch
+		if r.err != nil {
+			// ErrNoActiveSession and any other error mean the
+			// locator is not contributing this round; /continuar
+			// never fails because one agent is unreachable.
+			continue
+		}
+		if !r.session.TouchedAt.IsZero() && now.Sub(r.session.TouchedAt) > h.staleAfter {
+			continue
+		}
+		out = append(out, r.session)
+	}
+	return out, nil
+}
+
+// confirmCallback encodes the "yes, switch to this session" button
+// for a single active session. The session id is included so the
+// callback stays valid even if the locator later returns a
+// different "freshest" answer.
+func (h *Handler) confirmCallback(chatID int64, sess domain.ActiveSession) string {
+	return fmt.Sprintf("cc|%d|%s|%s", chatID, sess.Kind, sess.SessionID)
+}
+
+// previewCallback encodes the "show me the full preview" button.
+// We reuse the cn| family because the preview is just another
+// /continuar render with the chosen kind focused.
+func (h *Handler) previewCallback(chatID int64, sess domain.ActiveSession) string {
+	return fmt.Sprintf("cn|%d|%s", chatID, sess.Kind)
+}
+
+// now is the time source /continuar uses for staleness and the
+// "hace Xs" rendering. Defaults to time.Now; SetClock swaps it in
+// tests.
+func (h *Handler) handlerNow() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
+}
+
+// confirmActiveSession is the cc| callback handler. It receives the
+// kind+sessionID encoded in the button data, re-validates the
+// session via the matching locator (best-effort; a failure leaves
+// the state change standing because the user has already tapped),
+// and switches the chat's runtime state to that session.
+func (h *Handler) confirmActiveSession(ctx context.Context, chatID int64, kindRaw, sessionID string) (domain.BotResponse, error) {
+	agentKind := domain.AgentKind(kindRaw)
+	state, err := h.state.LoadRuntimeState(ctx)
+	if err != nil {
+		return domain.BotResponse{}, err
+	}
+	state.AgentKind = agentKind
+	state.SessionID = sessionID
+	state.ProjectID = ""
+	state.WorkspaceRoot = h.workspaceRoot
+	// Best-effort: ask the locator for the directory so the
+	// state can remember which project the session is bound to.
+	// If the locator is gone, the user can re-pick with /projects.
+	if h.locators != nil {
+		if loc, ok := h.locators.LocatorFor(agentKind); ok {
+			if active, locErr := loc.Locate(ctx); locErr == nil {
+				if active.SessionID == sessionID {
+					state.RelativePath = relativeUnderWorkspace(h.workspaceRoot, active.Directory)
+				}
+			}
+		}
+	}
+	if err := h.state.SaveRuntimeState(ctx, state); err != nil {
+		return domain.BotResponse{}, err
+	}
+	if h.registry != nil {
+		_ = h.registry.SetActive(chatID, agentKind)
+	}
+	label := string(agentKind)
+	if label == "" {
+		label = "el agente"
+	}
+	return domain.BotResponse{
+		Text: fmt.Sprintf("Listo: cambiaste a la sesión `%s` en `%s`. Enviame el próximo prompt y lo mando a esa sesión.", truncateID(sessionID), label),
+	}, nil
+}
+
+func truncateID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12] + "…"
+}
+
+func humanizeSince(t, now time.Time) string {
+	if t.IsZero() {
+		return "desconocido"
+	}
+	d := now.Sub(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func (h *Handler) watch(ctx context.Context, chatID int64, args []string) (domain.BotResponse, error) {
