@@ -76,6 +76,13 @@ partir de ahí el toggle funciona.
 `SMAppService.mainApp.register()` y aparece en *Ajustes del sistema →
 General → Ítems de inicio*. Solo funciona si la app vive en `/Applications/`.
 
+**Arranque del bot**: al abrir la app (incluido el arranque al login), si la
+configuración es válida el bot arranca solo; no hace falta pulsar Iniciar.
+
+> Existe un wrapper equivalente para Windows (`Agentower.exe`, bandeja del
+> sistema) en [`windows/README.md`](../../windows/README.md), con las mismas
+> secciones de Settings y el mismo flujo de notificaciones.
+
 ## Ubicaciones
 
 | Recurso | Ruta |
@@ -107,6 +114,7 @@ macos/Agentower/
 │   ├── SettingsView.swift              # SwiftUI form
 │   ├── SettingsWindowController.swift  # NSWindow propia
 │   ├── BotController.swift             # Process start/stop
+│   ├── IdleNotifier.swift              # CGEventSource + control socket (/notify, /question-notify)
 │   ├── ConfigStore.swift               # UserDefaults + writer .env
 │   ├── AppState.swift                  # ObservableObject
 │   ├── AppPaths.swift                  # paths de support/logs

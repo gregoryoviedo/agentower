@@ -9,11 +9,12 @@ Agentower turns Telegram into a thin remote control for one of several
 local AI agents — opencode, Claude Code, Kiro, GitHub Copilot, Codex,
 Antigravity.
 The bot is the only surface you interact with on your phone; whichever
-agent is active keeps doing the work locally on your Mac.
+agent is active keeps doing the work locally on your machine.
 
-A small Swift menu-bar wrapper for macOS is shipped alongside the bot so
-that the same single-user workflow can be launched, supervised, and
-configured from the system tray without bespoke shell glue.
+A small native wrapper is shipped alongside the bot so that the same
+single-user workflow can be launched, supervised, and configured from the
+system tray without bespoke shell glue: `Agentower.app` (Swift, macOS menu
+bar) and `Agentower.exe` (C#/.NET WinForms, Windows notification area).
 
 ## Target scenario
 
@@ -27,13 +28,15 @@ configured from the system tray without bespoke shell glue.
    them), or jump back into `/sessions`.
 6. When you return home, the local machine has already done the work.
 
-On macOS the wrapper is the convenient launcher:
+The wrapper is the convenient launcher on both platforms:
 
-1. First run: open the app, fill `Settings…`, save. The Agentes de IA
-   section detects which CLIs you have installed.
-2. Subsequent runs: the icon in the menu bar shows whether the bot is
-   running; click toggles it, right-click opens the menu.
-3. The "Iniciar al login" toggle makes the wrapper start itself at boot.
+1. First run: open the app, fill the Settings form, save. The Agentes de
+   IA section detects which CLIs you have installed.
+2. Subsequent runs: the tray/menu-bar icon shows whether the bot is
+   running; left click toggles it, right click opens the menu.
+3. The auto-start-at-login toggle makes the wrapper start itself at boot,
+   and on launch it **auto-starts the bot too** when the configuration is
+   valid, so the agent is supervised from the moment you sit down.
 
 ## Functional scope
 
@@ -64,9 +67,11 @@ On macOS the wrapper is the convenient launcher:
   `kiro-cli acp`, Copilot via ACP CLI or LSP). The `AgentServerManager`
   interface routes `Start/Stop/Started/OwnsSubprocess/WorkingDir` per
   kind.
-- Agent detection probes `PATH` first and then the app bundles (Kiro CLI,
-  VS Code Copilot), and augments `PATH` with the usual per-user bin
-  directories so GUI/launchd launches find the CLIs.
+- Agent detection probes `PATH` first and then the platform install
+  locations (macOS app bundles for Kiro CLI / VS Code Copilot /
+  Antigravity; Windows `%APPDATA%\npm`, `%LOCALAPPDATA%\Programs`,
+  `~/.opencode`, `~/.bun`, `~/.codex`), and augments `PATH` with the
+  usual per-user bin directories so GUI launches find the CLIs.
 - Kiro sessions are discovered from the JSONL store under
   `~/.kiro/sessions/<workspace>/<id>/messages.jsonl`, which is also what
   backs `ListMessages` for completion detection.
@@ -81,7 +86,8 @@ On macOS the wrapper is the convenient launcher:
   The question notification never fires twice for the same request and
   is dropped if the user answered locally first.
 - `TELEGRAM_PROXY_URL` and `TELEGRAM_API_ROOT` for restricted networks.
-- Clean shutdown on `SIGINT` / `SIGTERM`.
+- Clean shutdown on `SIGINT` / `SIGTERM` (Unix) or signal/`taskkill`
+  (Windows).
 - Sentinel errors in `domain/errors.go` so every recoverable failure can
   be matched programmatically (including `ErrAgentUnavailable` and
   `ErrAgentCapabilitiesLimited` for adapters with limited features).
@@ -102,7 +108,9 @@ On macOS the wrapper is the convenient launcher:
   every save inside `~/Library/Application Support/Agentower/`.
 - Logs at `~/Library/Logs/Agentower/bot.log`, accessible from the
   popover menu.
-- Auto-start at login via `SMAppService.mainApp` (Settings toggle).
+- Auto-start at login via `SMAppService.mainApp` (Settings toggle); on
+  launch the app also starts the bot automatically when the configuration
+  is valid.
 - `IdleNotifier`: polls the bot's local control socket over `127.0.0.1`,
   measures local inactivity with `CGEventSource`, and fires native
   notifications plus the Telegram completion/question prompts described
@@ -112,20 +120,46 @@ On macOS the wrapper is the convenient launcher:
   `.xcodeproj` with XcodeGen, and produces an ad-hoc-signed `.app` in
   `dist/`.
 
+#### Windows wrapper (`Agentower.exe`)
+
+- Notification-area icon (`NotifyIcon`) with a popover on left click
+  (toggle, status, uptime, quick actions) and a context menu on right
+  click.
+- WinForms Settings window with the same four sections as macOS:
+  Telegram, Agentes de IA (one row per agent: enabled / bin / port /
+  args, with detection), Avanzado and Inicio.
+- Persistence as `settings.json` plus a regenerated `.env` in
+  `%APPDATA%\Agentower\`; logs in `%LOCALAPPDATA%\Agentower\logs\`.
+- Agent detection with Windows install locations (`%APPDATA%\npm`,
+  `%LOCALAPPDATA%\Programs`, `~/.opencode`, `~/.bun`, `~/.codex`,
+  the VS Code extension for Copilot), respecting `PATHEXT`.
+- `BotController` embeds `remote-bot.exe`, extracts it to
+  `%LOCALAPPDATA%\Agentower\` and supervises it, killing the whole
+  process tree on stop.
+- Auto-start at login via the per-user `HKCU\...\Run` key, enabled by
+  default on first configuration; the app auto-starts the bot on launch.
+- `IdleNotifier`: `GetLastInputInfo` for idle time plus the same
+  control-socket completion/question flow, surfacing tray notifications.
+- x64-only, single-file, self-contained build (`windows/build.ps1`) with
+  a headless `--selftest` used by CI.
+
 ### Out of scope (today)
 
 - Multi-user access. The whitelist is a single ID.
 - Concurrent interactive flows. One Telegram chat at a time.
 - Multimedia (voice, image, document attachments).
-- Universal macOS binary (arm64-only; no Intel slice).
+- Universal macOS binary (arm64-only; no Intel slice) or non-x64
+  Windows binary (win-x64 only).
 - Scheduled tasks.
 - i18n.
-- SwiftUI tests (the Go side has full coverage; the wrapper relies on
-  manual QA).
+- Unit tests for the wrappers (the Go side has full coverage; the
+  wrappers rely on manual QA plus the Windows `--selftest` smoke test).
 - Sandboxing or notarisation (the `.app` is ad-hoc signed and needs
-  `xattr -dr com.apple.quarantine` on first launch).
-- IPC beyond `Process` spawning between the Swift wrapper and the Go
-  bot. The wrapper does not parse the bot's output.
+  `xattr -dr com.apple.quarantine` on first launch; the Windows `.exe` is
+  unsigned and may trigger SmartScreen).
+- Wrapper↔bot IPC beyond spawning plus the one-way loopback control
+  socket (`/state`, `/notify`, `/question-notify`). The wrappers never
+  parse the bot's stdout.
 - Structured-question forwarding for agents other than opencode. Claude
   Code runs headless (`--print`) where `AskUserQuestion` is disabled, and
   Kiro/Copilot only surface `session/request_permission`, which the ACP
@@ -148,15 +182,18 @@ On macOS the wrapper is the convenient launcher:
   agent and short-lived navigation state only.
 - When the macOS wrapper is used, the `.env` it regenerates is written
   with mode `0600` inside `~/Library/Application Support/`, accessible
-  only to the current user.
-- The Swift wrapper never makes network calls. It only spawns the Go
-  binary and supervises its lifecycle.
+  only to the current user. On Windows it lives in `%APPDATA%\Agentower\`
+  (per-user), together with `settings.json` and `state.db`.
+- The wrappers never make outbound network calls. They spawn the Go
+  binary, supervise its lifecycle, and poll the bot's loopback control
+  socket (`127.0.0.1`, address in `control.json`).
 
 ## Project infrastructure
 
 - **CI** (`.github/workflows/ci.yml`): `go test -race -coverprofile` on
-  Go 1.23 (Ubuntu) plus `golangci-lint` on Ubuntu. Runs on every push and
-  PR to `main`.
+  Go 1.23 (Ubuntu) plus `golangci-lint` on Ubuntu, and a `windows` job
+  that cross-compiles the bot, builds `Agentower.exe` and runs its
+  `--selftest`. Runs on every push and PR to `main`.
 - **Linting** (`.golangci.yml`): `errcheck`, `govet`, `staticcheck`,
   `revive`, `gocritic`, `goimports` (with `local-prefixes` matching the
   module path), and friends — exclusions scoped to `_test.go` helpers
@@ -183,9 +220,10 @@ Items in priority order, intentionally small and incremental:
 6. Voice transcription via a Whisper-compatible API (opt-in).
 7. `TELEGRAM_FORCE_IPV4` and richer proxy options for restricted networks
    (today only `TELEGRAM_PROXY_URL` is supported).
-8. Swift unit tests for `ConfigStore`, `AppState` and
-   `LoginItemManager` to lock in the wrapper behaviour without a
-   manual QA cycle.
+8. Wrapper unit tests (Swift for `ConfigStore`, `AppState`,
+   `LoginItemManager`; C# for `ConfigStore`, `AgentDetector`,
+   `BotController`) to lock in wrapper behaviour without a manual QA
+   cycle. The Windows side already has the `--selftest` smoke test.
 9. Branch-specific agent overrides (different agents for different
    git branches on the same project).
 10. Kiro session storage format: Kiro is a moving target (Code OSS

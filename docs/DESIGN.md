@@ -8,8 +8,9 @@ architectural decisions and trade-offs that shaped the code.
 
 ### Goals
 
-- Single Go binary as the system of record. The Swift macOS wrapper is an
-  optional launcher UI; the bot can run headless from a terminal.
+- Single Go binary as the system of record. The native wrappers (Swift on
+  macOS, C#/.NET on Windows) are optional launcher UIs; the bot can run
+  headless from a terminal.
 - Strict layering: pure domain, swappable adapters, easy testing.
 - Multi-agent: one Telegram chat at a time can drive any of the bundled
   adapters (opencode HTTP, Claude/Kiro stdio JSON, GitHub Copilot
@@ -28,7 +29,8 @@ architectural decisions and trade-offs that shaped the code.
 - Hosting agent subprocesses from inside the bot for non-loopback
   transports (they are always reachable on localhost or via the
   user's own CLI).
-- Universal macOS binary (arm64-only for now).
+- Universal macOS binary (arm64-only for now) and, on Windows, a
+  non-x64 build (win-x64 only).
 - i18n of user-facing strings.
 
 ## Layered architecture
@@ -63,12 +65,14 @@ Pure data and interfaces.
 - Entities: `AgentKind`, `AgentCapabilities`, `AgentDescriptor`,
   `Project`, `Session`, `RuntimeState`, `AgentState`, `NavigationState`,
   `DirectoryEntry`, `HealthStatus`, `FileChange`, `Message`,
-  `CompletedSession`, `Snapshot`, `BotButton`, `BotResponse`.
+  `CompletedSession`, `Snapshot`, `ActiveSession`, `PendingQuestion`,
+  `QuestionPrompt`, `QuestionOption`, `BotButton`, `BotResponse`.
 - Ports: `WorkspaceFS`, `StateRepository`, `NavigationRepository`,
   `AgentAdapter`, `AgentRegistry`, `AgentServerManager`, `BotHandler`,
   `SnapshotPublisher`, `CompletionPublisher`, `SessionEventLog`,
-  `ChatNotifier`. The legacy `OpenCodeClient` and `OpenCodeServerManager`
-  remain as deprecated aliases.
+  `SessionLocator`, `QuestionAdapter`, `QuestionBroker`, `ChatNotifier`.
+  The legacy `OpenCodeClient` and `OpenCodeServerManager` remain as
+  deprecated aliases.
 - Errors: `ErrOutsideWorkspace`, `ErrNotDirectory`, `ErrNavigationNotFound`,
   `ErrUnauthorizedNavigation`, `ErrServerNotRunning`, `ErrSessionRequired`,
   `ErrProjectRequired`, `ErrWorkspaceNotConfigured`, `ErrNoActiveAgent`,
@@ -98,10 +102,12 @@ Use cases — the rules of the product.
   back. Returns `domain.Err*` sentinels for every recoverable failure
   so the adapter layer can map them to user-facing replies.
 - `SessionWatcher`: polls the active agent and records completion
-  snapshots so the macOS wrapper can fire its idle-notification flow.
-  Each agent has its own capabilities; capabilities-limited adapters
-  return `ErrAgentCapabilitiesLimited` for actions the watcher cannot
-  exercise.
+  snapshots so the wrappers can fire their idle-notification flow. It
+  also polls `QuestionAdapter.ListQuestions`; a pending question
+  suppresses the completion and is published on the `QuestionBroker` so
+  the idle question flow can forward it to Telegram. Each agent has its
+  own capabilities; capabilities-limited adapters return
+  `ErrAgentCapabilitiesLimited` for actions the watcher cannot exercise.
 
 ### `internal/adapter`
 
@@ -116,9 +122,11 @@ Adapters that implement the ports and depend on real-world libraries.
   <uuid> --cwd <dir>`. Sessions are spawned lazily on first prompt;
   the manager reaps the subprocess once the trailing `result` event
   lands.
-- `adapter/agents/kiro`: minimal adapter — only SendPrompt +
-  Health; everything else returns `ErrAgentCapabilitiesLimited` because
-  Kiro's CLI surface is still poorly documented.
+- `adapter/agents/kiro`: ACP client over
+  `kiro-cli acp --agent-engine v3 --auth-method cli` (newline framing)
+  with `TrustAll: true` (permission requests auto-approved). Sessions can
+  be created or resumed (`session/resume`); history is read from the
+  JSONL store at `~/.kiro/sessions/<ws>/<id>/messages.jsonl`.
 - `adapter/agents/copilot`: real LSP client (Content-Length framed
   JSON-RPC 2.0). Spawns the modern `copilot` CLI when present, or a
   VS Code extension bundle via `node`. SendPrompt writes the prompt as
@@ -136,9 +144,10 @@ Adapters that implement the ports and depend on real-world libraries.
   `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl`
   and the IDE's `~/.gemini/antigravity/...`; `history.jsonl` drives the
   session locator.
-- `adapter/agents/detector`: PATH + bundle probing for every supported
-  agent; emits the boot-time `AgentDescriptor` list the registry
-  consumes.
+- `adapter/agents/detector`: PATH + app-bundle/installer probing for every
+  supported agent; emits the boot-time `AgentDescriptor` list the registry
+  consumes. `bundles.go` implements the per-OS lookup (macOS app bundles,
+  Windows `%APPDATA%\npm` / `%LOCALAPPDATA%\Programs` / `~/.opencode`).
 - `adapter/agents/registry`: per-chat active pick, lazy adapter
   construction, and the `Available` filter the Telegram picker uses.
 - `adapter/telegram`: telebot.v3 long polling, whitelist middleware,
@@ -159,13 +168,16 @@ Adapters that implement the ports and depend on real-world libraries.
 ### `cmd/remote-bot/main.go`
 
 The composition root: parse config, initialize adapters, wire up use
-cases, start the bot, react to `SIGINT` / `SIGTERM`.
+cases, start the bot, react to `SIGINT` / `SIGTERM`. Platform-specific
+process handling lives behind build tags: `internal/adapter/agents/opencode/process_unix.go`
+(`Setpgid` + `SIGTERM`) and `process_windows.go` (`taskkill /T /F`), and
+`cmd/remote-bot/path_unix.go` / `path_windows.go` for the PATH
+augmentation.
 
 ### `macos/Agentower`
 
-Optional Swift menu-bar wrapper around the Go binary. It is a launcher,
-not a peer service: the only IPC is `Process` spawning plus the `.env`
-file. Files of note:
+Optional Swift menu-bar wrapper around the Go binary. It is a launcher and
+control-socket client, not a peer service. Files of note:
 
 - `BotController.swift`: spawns the bundled `remote-bot`, sets
   `ENV_FILE`, `AGENTOWER_STATE_PATH`, `GIN_MODE`, and forwards
@@ -179,9 +191,47 @@ file. Files of note:
 - `LoginItemManager.swift`: wrapper around `SMAppService.mainApp` for
   the "auto-start at login" toggle. The wrapper recognises
   `/Applications/` and `~/Applications/` as valid install locations.
+- `IdleNotifier.swift`: polls the bot's control socket (`/state`) using
+  `CGEventSource` for idle time, then posts `/notify` or
+  `/question-notify` and raises `UNUserNotification`s.
 - `ConfigStore.swift`, `AppState.swift`: persistence glue. State updates
   flow through a single `onStateChange` closure so the status icon, the
   uptime label, and the Settings UI see the same `BotStatus`.
+
+### `windows/Agentower`
+
+Feature-parity WinForms (.NET 8) tray wrapper. Same responsibilities as
+the macOS app, with Windows idioms:
+
+- `TrayApplicationContext.cs`: `NotifyIcon` in the notification area,
+  context menu and popover, and the one-shot auto-start of the bot on
+  launch (deferred a UI tick so the WinForms `SynchronizationContext`
+  exists).
+- `BotController.cs`: extracts the embedded `remote-bot.exe` to
+  `%LOCALAPPDATA%\Agentower\` and spawns it with the same env vars;
+  logs to `%LOCALAPPDATA%\Agentower\logs\bot.log`; kills the process
+  tree via `Kill(entireProcessTree: true)`.
+- `SettingsForm.cs`: the four tabs (Telegram, Agentes, Avanzado, Inicio),
+  matching the macOS fields; `AgentDetector.cs` supplies the detection.
+- `IdleNotifier.cs`: `GetLastInputInfo` for idle time plus the same
+  control-socket polling/`notify`/`question-notify` flow, surfacing
+  tray balloons.
+- `AutostartManager.cs`: per-user `HKCU\...\Run` entry (no elevation).
+- `SelfTest.cs`: `--selftest` builds every form and runs detection
+  headlessly, used by CI.
+
+### Shared wrapper contract
+
+Both wrappers share the same seam with the bot and must stay
+feature-equivalent:
+
+- Write the `.env` schema (`WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN`,
+  `ALLOWED_CHAT_ID`, `AGENT_<KIND>_*`, optional overrides).
+- Set `ENV_FILE`, `AGENTOWER_STATE_PATH`, `GIN_MODE` and forward
+  `TELEGRAM_API_ROOT` / `TELEGRAM_PROXY_URL`.
+- Spawn `remote-bot`, stream stdout/stderr to a log file, and stop it
+  as a process tree.
+- Read `control.json` and poll `/state`, `/notify`, `/question-notify`.
 
 ## Trust boundaries
 
@@ -196,30 +246,37 @@ file. Files of note:
                                  │  SQLite  │
                                  └──────────┘
 
-  (Optional, macOS only)
+  (Optional wrappers)
 
-┌──────────────────────────────┐  Process.spawn  ┌────────────────────┐
-│ Agentower.app (Swift)   │ ───────────────►│ remote-bot binary  │
-│  NSStatusItem + SwiftUI form │ .env + env vars │  the same code   │
-└──────────────────────────────┘                 └────────────────────┘
+┌───────────────────────────────┐  spawn + .env   ┌────────────────────┐
+│ Agentower.app (Swift, macOS)  │ ───────────────►│ remote-bot binary  │
+│ Agentower.exe (C#, Windows)   │ .env + env vars │  the same Go code  │
+└───────────────┬───────────────┘                 └─────────┬──────────┘
+                │  GET /state · POST /notify · /question-notify
+                └────────── 127.0.0.1 control socket ◄───────┘
 ```
 
-- **Inbound (Go bot)**: only `api.telegram.org`. No listening sockets.
+- **Inbound (Go bot)**: only `api.telegram.org`. No listening sockets
+  apart from the loopback control socket used by the wrappers.
 - **Outbound (Go bot)**: loopback only — `127.0.0.1:4096` for opencode,
-  or stdin/stdout pipes for Claude / Kiro, or a loopback
-  JSON-RPC stream for the GitHub Copilot LSP.
+  or stdin/stdout pipes for Claude / Kiro / Codex / Antigravity, or a
+  loopback JSON-RPC stream for the GitHub Copilot LSP.
 - **Storage**: a single SQLite file with the runtime state.
 - **Storage (macOS wrapper)**: `UserDefaults` for Settings, a `0600`
   `.env` for the bot, and the bot's own SQLite file at
   `~/Library/Application Support/Agentower/state.db`.
-- **No IPC between wrapper and bot**: the wrapper never parses the
-  bot's stdout. Lifecycle is supervised via `Process` + `terminationHandler`.
+- **Storage (Windows wrapper)**: `settings.json` + `.env` + `state.db`
+  under `%APPDATA%\Agentower\`, logs under `%LOCALAPPDATA%\Agentower\logs\`.
+- **Wrapper ↔ bot IPC**: one-way over the loopback control socket — the
+  wrapper polls `/state` and posts `/notify` / `/question-notify`. The
+  wrapper never parses the bot's stdout; lifecycle is supervised via the
+  `Process` API (`terminationHandler` on macOS, `Exited` on Windows).
 
-## Why two different architectures in one project
+## Why different architectures in one project
 
-Go uses hexagonal / clean architecture; the Swift wrapper uses MVVM.
-That is intentional, not a leak, and the two do not need to be
-"unified".
+Go uses hexagonal / clean architecture; the Swift wrapper uses MVVM and
+the C# wrapper uses the WinForms event-driven model. That is intentional,
+not a leak, and the three do not need to be "unified".
 
 Each runtime uses the idioms of its ecosystem:
 
@@ -236,32 +293,41 @@ Each runtime uses the idioms of its ecosystem:
   `ConfigStore`) does the work. Forcing hexagonal onto a SwiftUI app
   would fight the framework, and forcing MVVM onto Go would fight
   `net/http`, `database/sql`, and the lack of a notification bus.
+- **C# / .NET WinForms** is event-driven by construction: controls raise
+  events handled in a `TrayApplicationContext`, state lives in plain
+  classes (`BotController`, `ConfigStore`), and background work is
+  marshalled back to the UI thread through the WinForms
+  `SynchronizationContext`. That is the native Windows idiom; a port/mesh
+  framework would add ceremony without buying anything.
 
-### What the two architectures share
+### What the three architectures share
 
 Although the vocabulary differs, the underlying philosophy is the same:
 
-| Hexagonal (Go)        | MVVM (Swift)             | Same principle                |
-|-----------------------|--------------------------|-------------------------------|
-| Domain at the centre  | Model at the centre      | Stable core, slow to change   |
-| Ports = interfaces    | ViewModel = `ObservableObject` | Observable / replaceable contract |
-| Adapters at the edge  | View + services at the edge | Replaceable boundaries, easy to mock |
-| Dependency rule inward | UI does not touch the model | Dependencies point at the core  |
+| Hexagonal (Go)        | MVVM (Swift)             | WinForms (C#)            | Same principle                |
+|-----------------------|--------------------------|--------------------------|-------------------------------|
+| Domain at the centre  | Model at the centre      | State classes at the centre | Stable core, slow to change |
+| Ports = interfaces    | ViewModel = `ObservableObject` | Event handlers + services | Observable / replaceable contract |
+| Adapters at the edge  | View + services at the edge | Forms + services at the edge | Replaceable boundaries, easy to mock |
+| Dependency rule inward | UI does not touch the model | UI does not touch the model | Dependencies point at the core  |
 
-### The seam between the two architectures
+### The seam between the architectures
 
-The two runtimes share **no code, no types, no FFI, no gRPC, no
+The three runtimes share **no code, no types, no FFI, no gRPC, no
 protobuf**. They talk through a process boundary whose contract is
 deliberately minimal and stable:
 
 1. **The `.env` schema** — the set of variable names and value formats
    documented in `README.md`. This is the only shared schema.
 2. **The `Process` API** — `executableURL`, `environment`,
-   `terminationHandler`, and the captured stdout/stderr piped to
-   `bot.log`.
-3. **An implicit log format** — the wrapper does not parse the bot's
+   `terminationHandler` (macOS) / `Exited` (Windows), and the captured
+   stdout/stderr piped to `bot.log`.
+3. **The control socket** — `control.json` + `/state`, `/notify`,
+   `/question-notify` over `127.0.0.1`. The wrappers only poll it; they
+   never parse the bot's stdout.
+4. **An implicit log format** — the wrapper does not parse the bot's
    stdout; it only streams it to a file. If the bot's log format ever
-   needs to change, the wrapper does not notice.
+   needs to change, the wrappers do not notice.
 
 ### Why this is the right answer (and not "one architecture to rule them all")
 
@@ -269,21 +335,22 @@ A unified architecture across languages only makes sense when the
 domains are shared in code: a single proto schema, a generated client,
 FFI bindings, or a service mesh. None of those exist here, and adding
 them would multiply the project's complexity for no benefit — the Go
-binary and the Swift wrapper are two genuinely independent programs
-with one small, well-defined contract between them.
+binary and the two wrappers are genuinely independent programs with one
+small, well-defined contract between them.
 
-The wrapper is intentionally a **dumb launcher**: it reads Settings,
-writes a `0600` `.env`, spawns the binary, and supervises its
-lifecycle. Its own "domain" is trivial (toggle state + last
-configuration); the real business domain lives 100% inside the Go
-binary. Duplicating that domain in Swift would create a second source
-of truth that would silently drift from the Go implementation.
+The wrappers are intentionally **dumb launchers**: they read Settings,
+write a `.env`, spawn the binary, supervise its lifecycle, and poll the
+control socket. Their own "domain" is trivial (toggle state + last
+configuration + idle detection); the real business domain lives 100%
+inside the Go binary. Duplicating that domain in Swift or C# would
+create a second source of truth that would silently drift from the Go
+implementation.
 
 If a future contributor proposes "let's unify the architectures", the
 question to ask is: *which new shared piece of code would force the
 unification, and what does it actually buy us?* If the answer is "no
 new shared code, just consistency for its own sake", the answer here
-is to keep the two architectures separate.
+is to keep the architectures separate.
 
 ## Workspace safety
 
@@ -311,15 +378,18 @@ validated against that record.
 - The CLI process shuts down on `SIGINT` / `SIGTERM` via
   `signal.NotifyContext`; the bot stops its long poller and the SQLite
   connection is closed.
-- The `opencode serve` subprocess is started with `Setpgid: true` so
-  that its whole process group can be terminated with a single
-  `SIGTERM`. If it does not exit within `shutdownGrace` (5 s) the
-  manager escalates to `SIGKILL`. The wrapper applies the same 5-second
-  escalation window via `Process.terminate()`.
-- The Swift wrapper observes the child via `Process.terminationHandler`
-  on the main queue. State updates fan out through a single
-  `onStateChange` closure (the previous Combine + closure duplication was
-  removed).
+- The `opencode serve` subprocess is started in its own process group on
+  Unix (`Setpgid: true`) so it can be signalled with a single `SIGTERM`;
+  if it does not exit within `shutdownGrace` (5 s) the manager escalates
+  to `SIGKILL`. On Windows there is no process-group signal, so
+  `process_windows.go` shells out to `taskkill /T /F` to kill the tree,
+  with `Process.Kill()` as a fallback. The wrappers apply the same
+  5-second window (`Process.terminate()` on macOS,
+  `Kill(entireProcessTree: true)` on Windows).
+- The macOS wrapper observes the child via `Process.terminationHandler`
+  on the main queue; the Windows wrapper via the `Exited` event, posting
+  back to the UI `SynchronizationContext`. State updates fan out through
+  a single change callback so the icon, uptime label and Settings agree.
 - Navigation records expire after `navigationTTL` (15 minutes); each
   successful `Enter` / `Back` / `Home` resets the timer. Records are
   bound to the originating `chatID`, so a callback pressed in another
@@ -356,24 +426,27 @@ handle it.
 - `gopkg.in/telebot.v3` is a small, focused Telegram library with long
   polling and inline keyboards.
 
-## Why a Swift menu-bar wrapper (and not pure CLI)
+## Why native wrappers (and not pure CLI)
 
 A wrapper was added on top of the Go binary for three reasons:
 
-1. **Discoverability.** A macOS user wants the bot to launch at login,
-   surface a "running / stopped" status, and offer one-click access to
-   the log. The wrapper does exactly that without bespoke shell glue.
+1. **Discoverability.** A macOS user wants the bot in the menu bar and a
+   Windows user wants it in the notification area, with a "running /
+   stopped" status, auto-start at login, and one-click access to the log.
+   The wrappers do exactly that without bespoke shell glue.
 2. **Configuration as a form.** `WORKSPACE_ROOT`, the bot token, the
-   chat ID, the OpenCode port and bin, the login-item toggle and the
+   chat ID, each agent's bin/port/args, the login-item toggle and the
    optional proxy/API-root settings are all first-class fields in a
-   SwiftUI form, persisted to `UserDefaults` and a `0600` `.env`.
-3. **Zero extra attack surface.** The wrapper does not speak to
-   OpenCode or to Telegram itself. It only spawns the existing Go
-   binary, which already enforces the trust model in `SECURITY.md`.
+   SwiftUI form (macOS, persisted to `UserDefaults` + a `0600` `.env`)
+   or a WinForms form (Windows, persisted to `settings.json` + `.env`).
+3. **Zero extra attack surface.** The wrappers do not speak to any agent
+   or to Telegram itself. They only spawn the existing Go binary, which
+   already enforces the trust model in `SECURITY.md`.
 
-The wrapper is optional. Users who prefer a pure CLI workflow can keep
-running `remote-bot` directly from a terminal, Raycast, or `launchd` —
-that workflow is still documented in the repo history.
+The wrappers are optional. Users who prefer a pure CLI workflow can keep
+running `remote-bot` directly from a terminal, Raycast, `launchd`, the
+Windows Task Scheduler, or the Startup folder — that workflow is still
+documented in the repo history.
 
 ## What we keep in mind when adding code
 
@@ -387,10 +460,15 @@ that workflow is still documented in the repo history.
   import-free.
 - Test coverage on the workspace browser and navigation service is
   non-negotiable. They are the security perimeter.
-- New failure modes that the wrapper or another adapter might need to
+- New failure modes that the wrappers or another adapter might need to
   handle get a sentinel in `domain/errors.go` first; string-matching
   error checks are a smell.
+- When you add or change a settings field, an agent, or a notification
+  flow, update **both** wrappers (`macos/Agentower` and
+  `windows/Agentower`) so they stay feature-equivalent.
 - CI runs `go test -race -coverprofile` on Go 1.23 (Ubuntu) plus
-  `golangci-lint` (config in `.golangci.yml`). Dependabot opens weekly
-  PRs grouped by ecosystem (`gomod`, `github-actions`, `swift`) so
-  dependency churn never sneaks in unreviewed.
+  `golangci-lint` (config in `.golangci.yml`), and a Windows job that
+  cross-compiles the bot, builds `Agentower.exe`, and runs its
+  `--selftest`. Dependabot opens weekly PRs grouped by ecosystem
+  (`gomod`, `github-actions`, `swift`) so dependency churn never sneaks
+  in unreviewed.

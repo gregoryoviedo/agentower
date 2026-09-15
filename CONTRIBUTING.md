@@ -12,6 +12,8 @@ Gracias por el interés en Agentower.
    go vet ./...
    go build -o remote-bot ./cmd/remote-bot
    ```
+   Si tocas el wrapper de Windows, comprueba además
+   `.\windows\build.ps1` y `.\dist\Agentower.exe --selftest` (PowerShell).
 3. Si tocas la capa de dominio (`internal/domain`), asegúrate de que
    sigue sin importar nada externo más allá de la librería estándar.
 4. Abre un pull request describiendo el cambio y enlazando el comando
@@ -37,17 +39,24 @@ internal/
   usecase/     navegador del workspace, navegación, bot handler, session watcher
   adapter/
     agents/
-      opencode/   cliente REST + manager del subproceso
-      claude/     stdio JSON contra `claude --print --output-format stream-json`
-      kiro/       stdio JSON contra `kiro chat --session ...`
-      copilot/    cliente LSP JSON-RPC 2.0 contra `copilot --stdio`
-      detector.go PATH + bundle probing
+      opencode/    cliente REST + manager del subproceso
+      claude/      stdio JSON contra `claude --print --output-format stream-json`
+      kiro/        ACP contra `kiro-cli acp` + historial JSONL
+      copilot/     ACP (CLI) / cliente LSP (bundle de VS Code)
+      codex/       headless `codex exec --json -` + historial JSONL
+      antigravity/ headless `agy --output-format stream-json` + transcript
+      bundles.go   detección por SO (bundles/instaladores)
+      detector.go  PATH + probing por plataforma
       registry.go  AgentRegistry + per-chat active pick
+      process_*.go manejo de proceso por SO (unix/windows)
     telegram/  long polling, whitelist, callbacks
     storage/   repositorio SQLite (runtime_state, agent_state, directory_navigation, completed_session)
+    control/   servidor HTTP local para los wrappers (/state, /notify, /question-notify)
     workspace/ adaptador de filesystem
     config/      cargador de .env (AGENT_<KIND>_*)
-cmd/remote-bot/ composition root
+cmd/remote-bot/ composition root (+ path_unix.go / path_windows.go)
+macos/Agentower/   wrapper Swift (barra de menús) — opcional
+windows/Agentower/ wrapper C#/.NET WinForms (área de notificación) — opcional
 ```
 
 Las flechas de dependencia apuntan hacia adentro: el dominio no sabe
@@ -116,9 +125,14 @@ pequeña y cubrir cada rama en el test.
 4. Registra el adapter en `cmd/remote-bot/main.go` detrás de la guarda
    `hasDetected<Kind>(descriptors)` así un usuario sin el binario no ve
    un adapter roto.
-5. Añade una entrada para el nuevo kind en `ConfigStore.agentKinds` /
-   `displayName(for:)` en la app nativa para que la sección **Agentes
-   de IA** del Settings la muestre.
+5. Añade una entrada para el nuevo kind en **ambos wrappers** para que la
+   sección **Agentes** del Settings lo muestre y lo detecte:
+   - macOS: `ConfigStore.agentKinds` / `defaultPort(for:)` /
+     `displayName(for:)` y `detectAgentsInPath()`.
+   - Windows: `ConfigStore.AgentKinds` / `DefaultPort` / `DisplayName`
+     y `AgentDetector.Detect()`.
+   En el detector Go, añade la ruta por SO en
+   `internal/adapter/agents/bundles.go`.
 6. Si el agente expone un endpoint HTTP en localhost, documéntalo en
    `SECURITY.md` para mantener la superficie de ataque al día.
 
@@ -153,7 +167,9 @@ manejo del token:
 - Etiqueta el commit en `main` con versionado semver:
   `git tag v0.x.y`.
 - No publiques binarios firmados; los usuarios compilan con
-  `go build -o remote-bot ./cmd/remote-bot`.
+  `go build -o remote-bot ./cmd/remote-bot`, `make app` (macOS) o
+  `.\windows\build.ps1` (Windows).
 - Tras etiquetar, actualiza `docs/PRODUCT.md` (sección "Implemented" u
-  "Open task list" según corresponda) y `README.md` si hay nuevos
-  comandos o variables.
+  "Open task list" según corresponda), `README.md` si hay nuevos
+  comandos o variables, y el `AGENTS.md`/`docs` si cambia la
+  arquitectura de los wrappers.

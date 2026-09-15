@@ -18,7 +18,8 @@
 - [ ] I have read the [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) guide
 - [ ] My code follows the project's style guidelines
 - [ ] I have added tests that prove my fix/feature works
-- [ ] New and existing unit tests pass locally (`make test`)
+- [ ] New and existing unit tests pass locally (`go test ./...`)
+- [ ] Windows wrapper changes build and pass `--selftest` (`.\windows\build.ps1`)
 - [ ] I have updated relevant documentation
 
 ## Screenshots / Logs

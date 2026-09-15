@@ -6,9 +6,11 @@ Keep it short, factual, and up to date.
 ## What this is
 
 Agentower is a Telegram remote control for local AI agents (opencode,
-Claude Code, Kiro, GitHub Copilot). One Go binary (`remote-bot`) does the
-work; an optional macOS menu-bar wrapper (`Agentower.app`, Swift) launches
-it, stores settings, and drives the idle notifications.
+Claude Code, Kiro, GitHub Copilot, Codex, Antigravity). One Go binary
+(`remote-bot`) does the work; an optional native wrapper launches it,
+stores settings, and drives the idle notifications — `Agentower.app`
+(Swift, macOS menu bar) or `Agentower.exe` (C#/.NET WinForms, Windows
+notification area).
 
 ## Commands
 
@@ -25,6 +27,13 @@ make app                                    # build dist/Agentower.app (macOS)
 make icons                                  # regenerate the menu-bar/app icons
 ```
 
+For the Windows wrapper (PowerShell):
+
+```powershell
+.\windows\build.ps1                         # build dist\Agentower.exe (win-x64)
+.\dist\Agentower.exe --selftest             # headless smoke test (config + forms + detection)
+```
+
 There are no Makefile targets for Go tests/lint; use the `go`/`golangci-lint`
 commands directly. Always run `go test ./...` and `golangci-lint run ./...`
 before considering a change done. For Swift changes, at minimum typecheck:
@@ -33,6 +42,12 @@ before considering a change done. For Swift changes, at minimum typecheck:
 xcrun swiftc -typecheck macos/Agentower/Agentower/*.swift \
   -sdk "$(xcrun --show-sdk-path --sdk macosx)"
 ```
+
+Build the Windows wrapper with the .NET 8 SDK (`dotnet publish`); the Go
+bot there is compiled with `GOOS=windows GOARCH=amd64`. Note that several
+Go tests fail on Windows for unrelated reasons (fake agent binaries are
+extensionless shell scripts and symlink tests need privileges); CI runs
+the Go suite on Ubuntu and only builds/smokes the wrapper on Windows.
 
 ## Architecture
 
@@ -46,14 +61,20 @@ Hexagonal / Clean Architecture in three concentric layers:
   pending questions), `NavigationService`, `WorkspaceBrowser`. No
   Telegram-specific types; only `domain.BotResponse` goes back.
 - `internal/adapter` — real-world implementations:
-  - `agents/{opencode,claude,kiro,copilot}` + `agents/registry` +
-    `agents/detector` (PATH + app-bundle probing).
+  - `agents/{opencode,claude,kiro,copilot,codex,antigravity}` +
+    `agents/registry` + `agents/detector` (PATH + app-bundle/installer
+    probing; `bundles.go` is per-OS).
   - `telegram` (telebot.v3 long polling, whitelist, markdown→HTML).
   - `storage/sqlite` (WAL, single connection).
-  - `control` (local HTTP server the macOS wrapper talks to).
+  - `control` (local HTTP server the wrappers talk to).
   - `workspace`, `config`.
 - `cmd/remote-bot/main.go` — the composition root. **All wiring happens
   here**; if you add a port, wire it in `main.go` (and in tests).
+- `macos/Agentower/` (Swift) and `windows/Agentower/` (C#/.NET WinForms) —
+  the optional launchers. They never talk to agents or Telegram directly;
+  they write `.env`/settings, spawn `remote-bot`, stream its logs, and
+  poll the control socket for the idle completion/question flows. Keep
+  the two wrappers feature-equivalent.
 
 Legacy aliases `OpenCodeClient` and `OpenCodeServerManager` exist for
 compatibility; prefer `AgentAdapter` / `AgentRegistry` /
@@ -72,9 +93,10 @@ compatibility; prefer `AgentAdapter` / `AgentRegistry` /
 
 Notes and gotchas:
 
-- GUI/launchd launches start with a minimal `PATH`. `ensureUserBinPath`
-  in `main.go` appends `~/.local/bin`, `~/.nvm/versions/node/*/bin`,
-  Homebrew dirs, etc. before detection.
+- GUI launches start with a minimal `PATH` (Finder/launchd on macOS, the
+  Explorer environment on Windows). `ensureUserBinPath` in `main.go`
+  appends the per-OS user bin dirs (`~/.local/bin`, `~/.nvm/...`,
+  Homebrew; `%APPDATA%\npm`, `~/.bun`, `~/.opencode`, …) before detection.
 - Kiro/Copilot ACP agents are created with `TrustAll: true`, so
   `session/request_permission` is auto-approved and ACP `elicitation` is
   not advertised. There is currently no interactive question flow for
@@ -98,10 +120,12 @@ Notes and gotchas:
 
 ## Completion & question pipeline
 
-The macOS wrapper owns idle detection (`CGEventSource`); the Go bot owns
-agent polling. They talk over a loopback HTTP control socket
-(`internal/control`, default `127.0.0.1:0`, address written to
-`control.json`).
+The wrappers own idle detection (`CGEventSource` on macOS,
+`GetLastInputInfo` on Windows); the Go bot owns agent polling. They talk
+over a loopback HTTP control socket (`internal/control`, default
+`127.0.0.1:0`, address written to `control.json`). Both wrappers implement
+the same flows; mirror any change in `IdleNotifier.swift` and
+`IdleNotifier.cs`.
 
 - **Completion:** `SessionWatcher` sees the session stop changing and calls
   `Publisher.RequestNotification` → `/state` exposes `PendingNotifChat` →
@@ -146,8 +170,15 @@ agent polling. They talk over a loopback HTTP control socket
   `QuestionBroker`, `POST /question-notify`, callbacks `q|` / `qd|`.
 - **Kiro**: migrated from the old VS Code `state.vscdb` reader to ACP plus
   the JSONL history store.
-- **Agent detection**: PATH then app bundles, with PATH augmentation for
-  GUI launches.
+- **Agent detection**: PATH then app bundles/installers, with PATH
+  augmentation for GUI launches (per-OS paths in `bundles.go` and
+  `path_windows.go` / `path_unix.go`).
+- **Codex & Antigravity**: headless CLI adapters (no server, no TTY).
+- **Windows wrapper**: C#/.NET 8 WinForms tray app (`windows/`), feature
+  parity with macOS — settings, detection, idle notifications, login
+  auto-start. It auto-starts the bot on launch when config is valid;
+  macOS does the same. The Go bot cross-compiles for Windows via build
+  tags (`process_unix.go` / `process_windows.go`).
 
 See `docs/DESIGN.md` for the full design and `docs/PRODUCT.md` for scope
 and roadmap.
