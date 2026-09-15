@@ -1,234 +1,165 @@
-// Package kiro implements the AgentAdapter for AWS's Kiro CLI.
-//
-// Kiro's CLI is the least documented of the supported agents, so this
-// adapter ships in a deliberately minimal posture: SendPrompt and
-// Health only, with every other capability returning
-// ErrAgentCapabilitiesLimited so the Telegram UI hides the
-// corresponding buttons. The wire format mirrors the Claude
-// adapter (newline-delimited JSON over stdio) so when Kiro exposes a
-// real protocol the migration path is clear.
+// Package kiro implements the AgentAdapter for AWS's Kiro CLI over
+// the Agent Client Protocol (ACP). Kiro exposes an ACP server via
+// `kiro-cli acp --agent-engine v3 --auth-method cli`, which lets
+// Agentower create, resume and drive Kiro sessions from Telegram —
+// including chats the user started in the Kiro IDE (session/resume).
 package kiro
 
 import (
-	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os/exec"
-	"strings"
 	"sync"
-	"time"
+
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/acp"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
-// Manager owns the Kiro subprocess lifecycle.
+// Manager owns the Kiro ACP subprocess lifecycle. Sessions are lazy:
+// the subprocess spawns on the first prompt or session creation and
+// stays alive across prompts so history is preserved.
 type Manager struct {
 	bin  string
 	port int
 
-	workdirMu sync.RWMutex
-	workdir   string
-
-	mu       sync.Mutex
-	running  bool
-	sessions map[string]*session
+	mu      sync.Mutex
+	workdir string
+	running bool
+	agent   *acp.Agent
+	known   map[string]bool
 }
 
-type session struct {
-	id       string
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   io.ReadCloser
-	cwd      string
-	mu       sync.Mutex
-	lastUsed time.Time
-	dead     bool
-}
-
+// NewManager builds the manager. bin is the kiro-cli binary (usually
+// the path the detector found inside Kiro CLI.app).
 func NewManager(bin string, port int) *Manager {
-	return &Manager{
-		bin:      bin,
-		port:     port,
-		sessions: map[string]*session{},
+	return &Manager{bin: bin, port: port, known: map[string]bool{}}
+}
+
+// MarkStarted flags the manager as owning a Kiro subprocess.
+func (m *Manager) MarkStarted(workdir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.workdir = workdir
+	m.running = true
+}
+
+// MarkStopped clears the running flag and tears down the subprocess.
+func (m *Manager) MarkStopped() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.running = false
+	if m.agent != nil {
+		m.agent.Close()
+		m.agent = nil
 	}
 }
 
-func (m *Manager) MarkStarted(workdir string) {
-	m.workdirMu.Lock()
-	m.workdir = workdir
-	m.workdirMu.Unlock()
-	m.mu.Lock()
-	m.running = true
-	m.mu.Unlock()
-}
-
-func (m *Manager) MarkStopped() {
-	m.mu.Lock()
-	m.running = false
-	m.mu.Unlock()
-}
-
+// Started reports whether the manager considers Kiro running.
 func (m *Manager) Started() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.running
 }
 
+// WorkingDir returns the cwd the manager was last marked with.
 func (m *Manager) WorkingDir() string {
-	m.workdirMu.RLock()
-	defer m.workdirMu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.workdir
 }
 
+// HasSession reports whether the given session id was created or
+// resumed through this manager.
 func (m *Manager) HasSession(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, ok := m.sessions[id]
-	return ok
+	return m.known[id]
 }
 
-func (m *Manager) NewSessionID() string {
-	buf := make([]byte, 16)
-	_, _ = rand.Read(buf)
-	return hex.EncodeToString(buf)
-}
-
-func (m *Manager) LockSession(id string) {
+// ensureAgent lazily starts the ACP subprocess for the configured
+// working directory.
+func (m *Manager) ensureAgent(ctx context.Context) (*acp.Agent, error) {
 	m.mu.Lock()
-	s, ok := m.sessions[id]
-	m.mu.Unlock()
-	if ok {
-		s.mu.Lock()
+	defer m.mu.Unlock()
+	if m.agent != nil && m.agent.Running() {
+		return m.agent, nil
 	}
-}
-
-func (m *Manager) UnlockSession(id string) {
-	m.mu.Lock()
-	s, ok := m.sessions[id]
-	m.mu.Unlock()
-	if ok {
-		s.mu.Unlock()
-	}
-}
-
-// SendPrompt spawns (or reuses) the subprocess for sessionID and
-// drives the round-trip. As with the other stdio agents we close
-// stdin after writing so the CLI unblocks its drain.
-func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (string, error) {
-	sess, err := m.ensureSession(ctx, sessionID)
-	if err != nil {
-		return "", err
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.lastUsed = time.Now()
-
-	payload, err := json.Marshal(map[string]any{
-		"type": "user",
-		"message": map[string]any{
-			"role":    "user",
-			"content": []map[string]any{{"type": "text", "text": text}},
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("encode prompt: %w", err)
-	}
-	if _, err := sess.stdin.Write(append(payload, '\n')); err != nil {
-		return "", fmt.Errorf("write prompt: %w", err)
-	}
-	if err := sess.stdin.Close(); err != nil {
-		return "", fmt.Errorf("close stdin: %w", err)
-	}
-	// Mark the session dead so the next SendPrompt for the same id
-	// respawns the subprocess instead of writing to a closed pipe.
-	sess.dead = true
-
-	scanner := bufio.NewScanner(sess.stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	var reply strings.Builder
-	var finished bool
-	for scanner.Scan() {
-		var event map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			continue
-		}
-		switch event["type"] {
-		case "assistant":
-			msg, _ := event["message"].(map[string]any)
-			content, _ := msg["content"].([]any)
-			for _, c := range content {
-				part, _ := c.(map[string]any)
-				if part["type"] == "text" {
-					if txt, ok := part["text"].(string); ok {
-						if reply.Len() > 0 {
-							reply.WriteString("\n\n")
-						}
-						reply.WriteString(txt)
-					}
-				}
-			}
-		case "turn.completed":
-			finished = true
-		}
-		if finished {
-			break
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("scan kiro stdout: %w", err)
-	}
-	go func() {
-		_ = sess.cmd.Wait()
-		sess.mu.Lock()
-		sess.cmd = nil
-		sess.mu.Unlock()
-	}()
-	return reply.String(), nil
-}
-
-// ensureSession lazily starts the Kiro subprocess. The argv matches
-// what we know about the CLI today; if it ships a different flag set
-// the adapter will fail with a clear error and the user can override
-// via AGENT_KIRO_ARGS.
-func (m *Manager) ensureSession(ctx context.Context, id string) (*session, error) {
-	m.mu.Lock()
-	sess, ok := m.sessions[id]
-	m.mu.Unlock()
-	if ok && sess != nil && !sess.dead && sess.cmd != nil && sess.cmd.ProcessState == nil && sess.cmd.Process != nil {
-		return sess, nil
-	}
-	workdir := m.WorkingDir()
+	workdir := m.workdir
 	if workdir == "" {
 		return nil, errors.New("kiro manager has no working directory")
 	}
-	argv := []string{m.bin, "chat", "--session", id, "--cwd", workdir}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir = workdir
-	cmd.Stderr = io.Discard
-	stdin, err := cmd.StdinPipe()
+	agent := acp.NewAgent(acp.AgentOptions{
+		Bin:      m.bin,
+		Args:     []string{"acp", "--agent-engine", "v3", "--auth-method", "cli"},
+		Framing:  acp.FramingNewline,
+		TrustAll: true,
+	})
+	if err := agent.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start kiro acp: %w", err)
+	}
+	m.agent = agent
+	return agent, nil
+}
+
+// SendPrompt resumes (when needed) the session and sends a message,
+// returning the assistant's text reply.
+func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (string, error) {
+	agent, err := m.ensureAgent(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("open stdin: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("open stdout: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("spawn kiro: %w", err)
-	}
-	sess = &session{
-		id:       id,
-		cmd:      cmd,
-		stdin:    stdin,
-		stdout:   stdout,
-		cwd:      workdir,
-		lastUsed: time.Now(),
+		return "", err
 	}
 	m.mu.Lock()
-	m.sessions[id] = sess
+	known := m.known[sessionID]
 	m.mu.Unlock()
-	return sess, nil
+	if !known {
+		if err := agent.ResumeSession(ctx, sessionID, m.WorkingDir()); err != nil {
+			return "", fmt.Errorf("resume kiro session: %w", err)
+		}
+		m.mu.Lock()
+		m.known[sessionID] = true
+		m.mu.Unlock()
+	}
+	return agent.Prompt(ctx, sessionID, text)
+}
+
+// CreateSession starts a fresh Kiro session via ACP and returns its
+// real session id.
+func (m *Manager) CreateSession(ctx context.Context, cwd string) (string, error) {
+	agent, err := m.ensureAgent(ctx)
+	if err != nil {
+		return "", err
+	}
+	id, err := agent.NewSession(ctx, cwd)
+	if err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	m.known[id] = true
+	m.mu.Unlock()
+	return id, nil
+}
+
+// listSessions returns the sessions Kiro knows for the working
+// directory via ACP session/list.
+func (m *Manager) listSessions(ctx context.Context) ([]domain.Session, error) {
+	agent, err := m.ensureAgent(ctx)
+	if err != nil {
+		return nil, err
+	}
+	infos, err := agent.ListSessions(ctx, m.WorkingDir())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Session, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, domain.Session{ID: info.ID, Title: firstNonEmpty(info.Summary, info.Title, "Kiro "+truncate(info.ID, 8)), Directory: info.Cwd})
+	}
+	return out, nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

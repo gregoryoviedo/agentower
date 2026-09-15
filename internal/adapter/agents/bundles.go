@@ -38,6 +38,13 @@ var bundleLookup = func(name string) string {
 		}
 		return firstExisting(cli, ide)
 	case "copilot":
+		// Prefer the official Copilot CLI (npm @github/copilot), which
+		// exposes the ACP server (`copilot --acp`) the adapter drives.
+		// Fall back to the Copilot extension bundled with the VS Code
+		// app so detection still lights up for editor-only installs.
+		if cli := findCopilotCLI(); cli != "" {
+			return cli
+		}
 		bundle := "/Contents/Resources/app/extensions/copilot/dist/extension.js"
 		return firstExisting(
 			"/Applications/Visual Studio Code.app"+bundle,
@@ -47,6 +54,30 @@ var bundleLookup = func(name string) string {
 	default:
 		return ""
 	}
+}
+
+// findCopilotCLI scans the common npm-global binary directories for the
+// `copilot` executable.
+func findCopilotCLI() string {
+	home, _ := os.UserHomeDir()
+	var dirs []string
+	if home != "" {
+		dirs = append(dirs,
+			filepath.Join(home, ".npm-global", "bin"),
+			filepath.Join(home, ".local", "bin"),
+		)
+		if matches, _ := filepath.Glob(filepath.Join(home, ".nvm", "versions", "node", "*", "bin")); len(matches) > 0 {
+			dirs = append(dirs, matches...)
+		}
+	}
+	dirs = append(dirs, "/usr/local/bin", "/opt/homebrew/bin")
+	for _, dir := range dirs {
+		p := filepath.Join(dir, "copilot")
+		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+			return p
+		}
+	}
+	return ""
 }
 
 // firstExisting returns the first path that exists and is a regular

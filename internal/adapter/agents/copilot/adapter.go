@@ -2,8 +2,6 @@ package copilot
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -13,17 +11,20 @@ import (
 )
 
 // Adapter is the GitHub Copilot AgentAdapter. It drives the Copilot
-// Language Server over JSON-RPC and uses
-// textDocument/inlineCompletion as the SendPrompt transport today.
-// Other capabilities return ErrAgentCapabilitiesLimited because the
-// upstream LSP surface does not yet expose stable endpoints for them.
+// CLI over ACP and reads the VS Code session store for message listing
+// and completion detection.
 type Adapter struct {
-	manager *Manager
+	manager  *Manager
+	stateDir string
 }
 
 func NewAdapter(mgr *Manager) *Adapter {
 	return &Adapter{manager: mgr}
 }
+
+// SetStateDir overrides the VS Code globalStorage root used for
+// on-disk history (defaults to github.copilot-chat globalStorage).
+func (a *Adapter) SetStateDir(dir string) { a.stateDir = dir }
 
 var _ domain.AgentAdapter = (*Adapter)(nil)
 
@@ -42,79 +43,36 @@ func (a *Adapter) ListProjects(_ context.Context) ([]domain.Project, error) {
 	return nil, nil
 }
 
-func (a *Adapter) ListSessions(_ context.Context) ([]domain.Session, error) {
-	return nil, nil
+func (a *Adapter) ListSessions(ctx context.Context) ([]domain.Session, error) {
+	return a.manager.listSessions(ctx)
 }
 
-// CreateSession allocates a fresh session id and primes a stub text
-// document on the language server side so subsequent inline completion
-// requests have something to operate on.
 func (a *Adapter) CreateSession(ctx context.Context, _ string) (domain.Session, error) {
-	id := newSessionID()
-	cl, err := a.manager.Client(ctx)
+	workdir := a.manager.WorkingDir()
+	if workdir == "" {
+		return domain.Session{}, errors.New("copilot manager has no working directory")
+	}
+	id, err := a.manager.CreateSession(ctx, workdir)
 	if err != nil {
 		return domain.Session{}, err
 	}
-	uri := "file:///" + a.manager.WorkingDir() + "/" + id + ".md"
-	doc := map[string]any{
-		"textDocument": map[string]any{
-			"uri":        uri,
-			"languageId": "markdown",
-			"version":    1,
-			"text":       "",
-		},
-	}
-	if err := cl.notify("textDocument/didOpen", doc); err != nil {
-		return domain.Session{}, fmt.Errorf("didOpen: %w", err)
-	}
-	return domain.Session{ID: id, ProjectID: "", Title: "Copilot " + id[:8]}, nil
+	return domain.Session{ID: id, ProjectID: "", Title: "Copilot " + truncateID(id)}, nil
 }
 
-// SendPrompt posts the prompt to the Copilot LSP by writing it as
-// the document text and requesting an inline completion. The
-// completion's `insertText` is returned as the reply.
 func (a *Adapter) SendPrompt(ctx context.Context, sessionID, text string) (string, error) {
-	cl, err := a.manager.Client(ctx)
-	if err != nil {
-		return "", err
+	if !a.manager.Started() {
+		return "", errors.New("copilot manager not running")
 	}
-	uri := "file:///" + a.manager.WorkingDir() + "/" + sessionID + ".md"
-	didChange := map[string]any{
-		"textDocument": map[string]any{"uri": uri, "version": 2},
-		"contentChanges": []map[string]any{{
-			"text": text,
-		}},
-	}
-	if err := cl.notify("textDocument/didChange", didChange); err != nil {
-		return "", fmt.Errorf("didChange: %w", err)
-	}
-	var completion struct {
-		Items []struct {
-			InsertText string `json:"insertText"`
-		} `json:"items"`
-	}
-	params := map[string]any{
-		"textDocument": map[string]any{"uri": uri},
-		"position":     map[string]any{"line": 0, "character": len(text)},
-		"context":      map[string]any{"triggerKind": 1},
-	}
-	if err := cl.call(ctx, "textDocument/inlineCompletion", params, &completion); err != nil {
-		return "", fmt.Errorf("inlineCompletion: %w", err)
-	}
-	if len(completion.Items) == 0 {
-		return "", nil
-	}
-	return completion.Items[0].InsertText, nil
+	return a.manager.SendPrompt(ctx, sessionID, text)
 }
 
-// Revert returns ErrAgentCapabilitiesLimited. The Copilot LSP does
-// not expose a per-prompt revert endpoint today.
+// Revert returns ErrAgentCapabilitiesLimited because Copilot does not
+// expose a per-prompt revert endpoint today.
 func (a *Adapter) Revert(_ context.Context, _ string) error {
-	return fmt.Errorf("%w: Copilot LSP does not expose a revert endpoint", domain.ErrAgentCapabilitiesLimited)
+	return fmt.Errorf("%w: Copilot does not expose a revert endpoint", domain.ErrAgentCapabilitiesLimited)
 }
 
-// FileStatus falls back to git diff because Copilot does not expose
-// file diffs natively.
+// FileStatus falls back to a git diff against the working directory.
 func (a *Adapter) FileStatus(ctx context.Context, _ string) ([]domain.FileChange, error) {
 	workdir := a.manager.WorkingDir()
 	if workdir == "" {
@@ -139,16 +97,18 @@ func (a *Adapter) FileStatus(ctx context.Context, _ string) ([]domain.FileChange
 	return changes, nil
 }
 
-// ListMessages is not implemented today because the Copilot LSP does
-// not expose a session history format we can parse.
-func (a *Adapter) ListMessages(_ context.Context, _ string) ([]domain.Message, error) {
-	return nil, fmt.Errorf("%w: Copilot LSP does not expose a session history", domain.ErrAgentCapabilitiesLimited)
-}
-
-func newSessionID() string {
-	buf := make([]byte, 16)
-	_, _ = rand.Read(buf)
-	return hex.EncodeToString(buf)
+// ListMessages reads the on-disk VS Code Copilot history for the
+// session.
+func (a *Adapter) ListMessages(_ context.Context, sessionID string) ([]domain.Message, error) {
+	root := a.stateDir
+	if root == "" {
+		derived, err := defaultVSCodeCopilotDir()
+		if err != nil {
+			return nil, err
+		}
+		root = derived
+	}
+	return readCopilotMessages(root, sessionID)
 }
 
 func gitStatusToLabel(code string) string {

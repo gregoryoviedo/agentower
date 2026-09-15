@@ -230,9 +230,10 @@ func TestSessionWatcherDoesNotRecordWhileStreaming(t *testing.T) {
 	}
 }
 
-// TestSessionWatcherSkipsCopilot confirms the watcher no-ops for
-// non-streaming agents. Copilot publishes its completion through
-// the handler, not the polling loop.
+// TestSessionWatcherSkipsCopilot guards the registry-lookup path for
+// an agent the bot does not have an adapter for: the tick must not
+// panic or record anything when the registry has no adapter for the
+// watched kind.
 func TestSessionWatcherSkipsCopilot(t *testing.T) {
 	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
 	defer store.Close()
@@ -264,5 +265,146 @@ func TestSessionWatcherSkipsCopilot(t *testing.T) {
 
 	if got := pub.count.Load(); got != 0 {
 		t.Fatalf("publisher count = %d, want 0 (copilot has no stream)", got)
+	}
+}
+
+// staticAdapter is a minimal domain.AgentAdapter for watcher tests: it
+// serves a fixed ListMessages result and returns empty everywhere else.
+type staticAdapter struct {
+	msgs []domain.Message
+}
+
+func (s *staticAdapter) Kind() domain.AgentKind { return domain.AgentKiro }
+func (s *staticAdapter) DisplayName() string    { return "Kiro" }
+func (s *staticAdapter) Health(context.Context) (domain.HealthStatus, error) {
+	return domain.HealthStatus{Healthy: true}, nil
+}
+func (s *staticAdapter) ListProjects(context.Context) ([]domain.Project, error) { return nil, nil }
+func (s *staticAdapter) ListSessions(context.Context) ([]domain.Session, error) { return nil, nil }
+func (s *staticAdapter) CreateSession(context.Context, string) (domain.Session, error) {
+	return domain.Session{}, nil
+}
+func (s *staticAdapter) SendPrompt(context.Context, string, string) (string, error) { return "", nil }
+func (s *staticAdapter) Revert(context.Context, string) error                       { return nil }
+func (s *staticAdapter) FileStatus(context.Context, string) ([]domain.FileChange, error) {
+	return nil, nil
+}
+func (s *staticAdapter) ListMessages(context.Context, string) ([]domain.Message, error) {
+	return s.msgs, nil
+}
+
+// staticLocator serves a fixed active session for the IDE watcher.
+type staticLocator struct {
+	kind domain.AgentKind
+	as   domain.ActiveSession
+	err  error
+}
+
+func (l *staticLocator) Kind() domain.AgentKind { return l.kind }
+func (l *staticLocator) Locate(context.Context) (domain.ActiveSession, error) {
+	return l.as, l.err
+}
+
+// kindAdapterRegistry serves the adapter for a specific agent kind.
+type kindAdapterRegistry struct {
+	kind    domain.AgentKind
+	adapter domain.AgentAdapter
+}
+
+func (r *kindAdapterRegistry) Descriptors() []domain.AgentDescriptor {
+	return []domain.AgentDescriptor{{Kind: r.kind, Available: true}}
+}
+func (r *kindAdapterRegistry) Available() []domain.AgentDescriptor { return r.Descriptors() }
+func (r *kindAdapterRegistry) DescriptorFor(k domain.AgentKind) (domain.AgentDescriptor, bool) {
+	if k != r.kind {
+		return domain.AgentDescriptor{}, false
+	}
+	return r.Descriptors()[0], true
+}
+func (r *kindAdapterRegistry) Get(k domain.AgentKind) (domain.AgentAdapter, error) {
+	if k != r.kind {
+		return nil, domain.ErrAgentUnavailable
+	}
+	return r.adapter, nil
+}
+func (r *kindAdapterRegistry) Active(_ int64) (domain.AgentKind, error) { return r.kind, nil }
+func (r *kindAdapterRegistry) SetActive(_ int64, _ domain.AgentKind) error {
+	return nil
+}
+
+// TestSessionWatcherWatchIDERecordsAndRequestsNotification covers the
+// IDE auto-follow path used for Copilot/Kiro: the watcher arms itself
+// on the locator's freshest session and, once stable, persists the
+// completion AND marks the notification pending so the macOS wrapper
+// can push the Telegram "Completado" message after idle.
+func TestSessionWatcherWatchIDERecordsAndRequestsNotification(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	msgs := []domain.Message{
+		{Info: domain.MessageInfo{ID: "u1", Role: "user"}, Parts: []domain.MessagePart{{Type: "text", Text: "hola"}}},
+		{Info: domain.MessageInfo{ID: "a1", Role: "assistant"}, Parts: []domain.MessagePart{{Type: "text", Text: "respuesta"}}},
+	}
+	adapter := &staticAdapter{msgs: msgs}
+	reg := &kindAdapterRegistry{kind: domain.AgentKiro, adapter: adapter}
+
+	pub := &recordingCompletionPublisher{}
+	var notified []int64
+	watcher := NewSessionWatcher(reg, store, store, pub, SessionWatcherOptions{
+		PollInterval:  10 * time.Millisecond,
+		IdleInterval:  10 * time.Millisecond,
+		IdleThreshold: 30 * time.Millisecond,
+		Clock:         time.Now,
+	})
+	watcher.SetRequestNotifier(func(chatID int64) {
+		notified = append(notified, chatID)
+	})
+
+	loc := &staticLocator{
+		kind: domain.AgentKiro,
+		as:   domain.ActiveSession{Kind: domain.AgentKiro, SessionID: "ide-1", Directory: "/tmp/work"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watcher.Run(ctx)
+	}()
+	watcher.WatchIDE(42, domain.AgentKiro, loc)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if pub.count.Load() >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if got := pub.count.Load(); got < 1 {
+		t.Fatalf("publisher count = %d, want >= 1", got)
+	}
+	if len(notified) == 0 {
+		t.Fatal("RequestNotification never called after completion")
+	}
+	if notified[0] != 42 {
+		t.Fatalf("notified chat = %d, want 42", notified[0])
+	}
+	lastRaw := pub.last.Load()
+	last, ok := lastRaw.(domain.CompletedSession)
+	if !ok {
+		t.Fatalf("last = %T, want CompletedSession", lastRaw)
+	}
+	if last.SessionID != "ide-1" || last.AgentKind != domain.AgentKiro {
+		t.Fatalf("completed = %+v, want ide-1/kiro", last)
+	}
+	if last.Preview != "respuesta" {
+		t.Fatalf("preview = %q, want respuesta", last.Preview)
 	}
 }

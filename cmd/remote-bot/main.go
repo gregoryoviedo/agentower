@@ -112,12 +112,16 @@ func main() {
 	}
 	if hasDetectedKiro(descriptors) {
 		registry.Register(domain.AgentKiro, func() (domain.AgentAdapter, error) {
-			return kiro.NewAdapter(kiroManager), nil
+			adapter := kiro.NewAdapter(kiroManager)
+			adapter.SetStateDir(cfg.KiroStateDir)
+			return adapter, nil
 		})
 	}
 	if copilotDescriptor.Bin != "" {
 		registry.Register(domain.AgentCopilot, func() (domain.AgentAdapter, error) {
-			return copilot.NewAdapter(copilotManager), nil
+			adapter := copilot.NewAdapter(copilotManager)
+			adapter.SetStateDir(cfg.CopilotStateDir)
+			return adapter, nil
 		})
 	}
 	if !opencodeDescriptor.Available {
@@ -134,6 +138,8 @@ func main() {
 	// workdir is empty until the first Start, so seed it with the
 	// workspace root and let the server manager keep it in sync below.
 	var claudeLoc *claude.SessionLocator
+	var kiroLoc *kiro.SessionLocator
+	var copilotLoc *copilot.SessionLocator
 	if opencodeDescriptor.Available {
 		locators.Add(agents_opencode.NewSessionLocator(opencodeClient))
 	}
@@ -150,21 +156,23 @@ func main() {
 		}
 	}
 	if hasDetectedKiro(descriptors) {
-		kiroLoc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{
+		loc, err := kiro.NewSessionLocator(kiro.SessionLocatorOptions{
 			StateDir: cfg.KiroStateDir,
 		})
 		if err == nil {
-			locators.Add(kiroLoc)
+			kiroLoc = loc
+			locators.Add(loc)
 		} else {
 			logger.Warn("build kiro locator", "error", err)
 		}
 	}
 	if copilotDescriptor.Bin != "" {
-		copilotLoc, err := copilot.NewSessionLocator(copilot.SessionLocatorOptions{
+		loc, err := copilot.NewSessionLocator(copilot.SessionLocatorOptions{
 			StateDir: cfg.CopilotStateDir,
 		})
 		if err == nil {
-			locators.Add(copilotLoc)
+			copilotLoc = loc
+			locators.Add(loc)
 		} else {
 			logger.Warn("build copilot locator", "error", err)
 		}
@@ -201,16 +209,40 @@ func main() {
 	handler.SetActiveLocators(locators)
 	handler.SetStaleAfter(cfg.StaleAfter)
 
-	watcher := usecase.NewSessionWatcher(registry, repository, repository, publisher, usecase.SessionWatcherOptions{
+	watcherOpts := usecase.SessionWatcherOptions{
 		PollInterval:  5 * time.Second,
 		IdleThreshold: 30 * time.Second,
 		Logger:        logger.With("component", "session-watcher"),
-	})
+	}
+	watcher := usecase.NewSessionWatcher(registry, repository, repository, publisher, watcherOpts)
+	watcher.SetRequestNotifier(publisher.RequestNotification)
 	handler.SetSessionController(watcher)
 	handler.SetCompletionPublisher(publisher)
 	go func() {
 		watcher.Run(stopContext)
 	}()
+
+	// IDE completion watchers: Copilot and Kiro are driven inside VS
+	// Code / the Kiro IDE, so the bot never prompts them. Each watcher
+	// auto-follows the freshest editor session and records the
+	// completion so the macOS wrapper can push the "Tarea completada"
+	// Telegram message after the user has been idle.
+	if copilotLoc != nil {
+		copilotIDE := usecase.NewSessionWatcher(registry, repository, repository, publisher, watcherOpts)
+		copilotIDE.SetRequestNotifier(publisher.RequestNotification)
+		copilotIDE.WatchIDE(cfg.AllowedChatID, domain.AgentCopilot, copilotLoc)
+		go func() {
+			copilotIDE.Run(stopContext)
+		}()
+	}
+	if kiroLoc != nil {
+		kiroIDE := usecase.NewSessionWatcher(registry, repository, repository, publisher, watcherOpts)
+		kiroIDE.SetRequestNotifier(publisher.RequestNotification)
+		kiroIDE.WatchIDE(cfg.AllowedChatID, domain.AgentKiro, kiroLoc)
+		go func() {
+			kiroIDE.Run(stopContext)
+		}()
+	}
 
 	bot, err := telegram.New(telegram.Config{
 		Token:         cfg.TelegramToken,
@@ -272,8 +304,14 @@ func ensureUserBinPath() {
 		filepath.Join(home, ".local", "bin"),
 		filepath.Join(home, ".bin"),
 		filepath.Join(home, "bin"),
+		filepath.Join(home, ".npm-global", "bin"),
 		"/opt/homebrew/bin",
 		"/usr/local/bin",
+	}
+	// nvm-managed node versions install global binaries (e.g. the
+	// Copilot CLI) under one dir per version.
+	if matches, _ := filepath.Glob(filepath.Join(home, ".nvm", "versions", "node", "*", "bin")); len(matches) > 0 {
+		dirs = append(dirs, matches...)
 	}
 	path := os.Getenv("PATH")
 	for _, dir := range dirs {
@@ -318,19 +356,17 @@ func findCopilotDescriptor(descriptors []domain.AgentDescriptor) domain.AgentDes
 	return domain.AgentDescriptor{Kind: domain.AgentCopilot}
 }
 
-// copilotLaunchConfig returns the LaunchConfig that matches the
-// descriptor the detector reported. If the binary lives in PATH the
-// adapter spawns it directly via LaunchCLI; otherwise we assume the
-// path is a VS Code extension.js bundle and run it through node via
-// LaunchBundle.
+// copilotLaunchConfig returns the LaunchConfig the Copilot manager
+// uses. ACP mode always spawns the Copilot CLI (`copilot --acp`); when
+// the detector only found the VS Code-bundled extension (which is not a
+// standalone ACP server), we fall back to the bare "copilot" name so
+// the augmented PATH resolves the CLI at spawn time.
 func copilotLaunchConfig(desc domain.AgentDescriptor) copilot.LaunchConfig {
-	if desc.Bin == "" {
-		return copilot.LaunchConfig{}
+	bin := desc.Bin
+	if bin == "" || isVSCodeCopilotBundle(bin) {
+		bin = "copilot"
 	}
-	if isVSCodeCopilotBundle(desc.Bin) {
-		return copilot.LaunchConfig{Mode: copilot.LaunchBundle, Bin: "node", Bundle: desc.Bin}
-	}
-	return copilot.LaunchConfig{Mode: copilot.LaunchCLI, Bin: desc.Bin}
+	return copilot.LaunchConfig{Mode: copilot.LaunchCLI, Bin: bin}
 }
 
 func isVSCodeCopilotBundle(path string) bool {

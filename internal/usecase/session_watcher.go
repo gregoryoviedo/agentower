@@ -37,14 +37,16 @@ type SessionWatcher struct {
 	previewSize    int
 	now            func() time.Time
 
-	mu          sync.Mutex
-	chatID      int64
-	kind        domain.AgentKind
-	sessionID   string
-	lastCount   int
-	lastStable  time.Time
-	lastTouched time.Time
-	recorded    bool
+	mu            sync.Mutex
+	chatID        int64
+	kind          domain.AgentKind
+	sessionID     string
+	ideLocator    domain.SessionLocator // auto-follow mode for IDE-driven agents
+	lastCount     int
+	lastStable    time.Time
+	lastTouched   time.Time
+	recorded      bool
+	requestNotify func(chatID int64)
 }
 
 // SessionWatcherOptions configures a SessionWatcher.
@@ -103,19 +105,44 @@ func NewSessionWatcher(registry domain.AgentRegistry, log domain.SessionEventLog
 // Watch switches the watcher to follow a specific session on a
 // specific agent. Passing an empty session id clears the current
 // observation. The kind controls which adapter the tick loop
-// dispatches to; non-streaming agents (today: Copilot) cause the
-// tick loop to no-op and let the handler drive the completion
-// flow.
+// dispatches to.
 func (w *SessionWatcher) Watch(chatID int64, kind domain.AgentKind, sessionID string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.chatID = chatID
 	w.kind = kind
 	w.sessionID = sessionID
+	w.ideLocator = nil
 	w.lastCount = 0
 	w.lastStable = time.Time{}
 	w.lastTouched = w.now()
 	w.recorded = false
+}
+
+// WatchIDE puts the watcher in auto-follow mode for an IDE-driven
+// agent: each tick it asks the locator for the freshest session the
+// user is driving (VS Code / Kiro IDE) and tracks it, so a task that
+// finishes in the editor is recorded and can trigger the Telegram
+// "Completado" notification without the user ever touching Telegram.
+func (w *SessionWatcher) WatchIDE(chatID int64, kind domain.AgentKind, locator domain.SessionLocator) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.chatID = chatID
+	w.kind = kind
+	w.sessionID = ""
+	w.ideLocator = locator
+	w.lastCount = 0
+	w.lastStable = time.Time{}
+	w.lastTouched = w.now()
+	w.recorded = false
+}
+
+// SetRequestNotifier wires the callback used to mark the idle
+// notification pending when a session completes. The macOS wrapper
+// then sends the Telegram "Tarea completada" message after the user has
+// been idle for its threshold.
+func (w *SessionWatcher) SetRequestNotifier(fn func(chatID int64)) {
+	w.requestNotify = fn
 }
 
 // Current returns the session id and agent kind currently being
@@ -169,8 +196,31 @@ func (w *SessionWatcher) tick(ctx context.Context) error {
 	chatID, kind, sessionID := w.chatID, w.kind, w.sessionID
 	lastCount := w.lastCount
 	recorded := w.recorded
+	ideLocator := w.ideLocator
 	w.mu.Unlock()
-	if sessionID == "" || chatID == 0 {
+	if chatID == 0 {
+		return nil
+	}
+	if ideLocator != nil {
+		as, err := ideLocator.Locate(ctx)
+		if err != nil || as.SessionID == "" {
+			// No session the user is driving right now.
+			return nil
+		}
+		if as.SessionID != sessionID {
+			w.mu.Lock()
+			w.sessionID = as.SessionID
+			w.lastCount = 0
+			w.lastStable = time.Time{}
+			w.lastTouched = w.now()
+			w.recorded = false
+			w.mu.Unlock()
+			sessionID = as.SessionID
+			lastCount = 0
+			recorded = false
+		}
+	}
+	if sessionID == "" {
 		return nil
 	}
 	if kind == "" {
@@ -253,15 +303,11 @@ func lastMessageIsFinal(messages []domain.Message) bool {
 }
 
 // agentStreams reports whether the watcher can poll message history
-// for the given agent. Today only Copilot (LSP) is excluded; every
-// other supported agent exposes a log-like history the watcher can
-// tail. New agents default to "streams" so a future addition that
-// exposes messages is picked up automatically.
+// for the given agent. Every supported agent exposes a log-like
+// history the watcher can tail (Copilot and Kiro read their on-disk
+// session stores), so this is always true.
 func agentStreams(kind domain.AgentKind) bool {
-	switch kind {
-	case domain.AgentCopilot:
-		return false
-	}
+	_ = kind
 	return true
 }
 
@@ -289,6 +335,9 @@ func (w *SessionWatcher) persistCompletion(ctx context.Context, chatID int64, ki
 	}
 	if w.publisher != nil {
 		w.publisher.PublishCompletion(snapshot)
+	}
+	if w.requestNotify != nil {
+		w.requestNotify(chatID)
 	}
 	w.logger.Info("session watcher recorded completion",
 		"chat_id", chatID, "session_id", sessionID, "agent", kind, "messages", len(messages))

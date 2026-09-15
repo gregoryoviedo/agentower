@@ -736,6 +736,12 @@ func (h *Handler) continueLast(ctx context.Context, chatID int64) (domain.BotRes
 		return domain.BotResponse{}, err
 	}
 	state.SessionID = snapshot.SessionID
+	if snapshot.AgentKind != "" {
+		// Route the continuation to the agent that produced the
+		// completed session (e.g. Copilot or Kiro, not just the
+		// currently-active opencode).
+		state.AgentKind = snapshot.AgentKind
+	}
 	if snapshot.ProjectID != "" {
 		state.ProjectID = snapshot.ProjectID
 	}

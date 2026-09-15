@@ -53,7 +53,7 @@ func TestAdapterSendPromptRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	reply, err := adapter.SendPrompt(ctx, session.ID, "hola kiro")
 	if err != nil {
@@ -80,12 +80,46 @@ func TestAdapterRevertReturnsCapabilitiesLimited(t *testing.T) {
 	}
 }
 
-func TestAdapterFileStatusReturnsCapabilitiesLimited(t *testing.T) {
-	mgr := kiro.NewManager(buildFakeKiro(t), 4099)
+func TestAdapterListMessagesReadsDisk(t *testing.T) {
+	root := t.TempDir()
+	sid := "sess_test123"
+	msgPath := filepath.Join(root, "sessions", "ws", sid, "messages.jsonl")
+	if err := os.MkdirAll(filepath.Dir(msgPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"payload":{"type":"user","content":"hola"}}`,
+		`{"payload":{"type":"assistant","content":"respuesta"}}`,
+	}
+	if err := os.WriteFile(msgPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr := kiro.NewManager("kiro", 4099)
 	mgr.MarkStarted(t.TempDir())
 	adapter := kiro.NewAdapter(mgr)
-	_, err := adapter.FileStatus(context.Background(), "x")
-	if !errors.Is(err, domain.ErrAgentCapabilitiesLimited) {
-		t.Fatalf("FileStatus err = %v, expected ErrAgentCapabilitiesLimited", err)
+	adapter.SetStateDir(root)
+	msgs, err := adapter.ListMessages(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[0].Info.Role != "user" || msgs[0].Parts[0].Text != "hola" {
+		t.Fatalf("msg[0] = %+v", msgs[0])
+	}
+	if msgs[1].Info.Role != "assistant" || msgs[1].Parts[0].Text != "respuesta" {
+		t.Fatalf("msg[1] = %+v", msgs[1])
+	}
+}
+
+func TestAdapterListMessagesMissingSession(t *testing.T) {
+	mgr := kiro.NewManager("kiro", 4099)
+	mgr.MarkStarted(t.TempDir())
+	adapter := kiro.NewAdapter(mgr)
+	adapter.SetStateDir(t.TempDir())
+	_, err := adapter.ListMessages(context.Background(), "ghost")
+	if !errors.Is(err, domain.ErrNoActiveSession) {
+		t.Fatalf("err = %v, want ErrNoActiveSession", err)
 	}
 }

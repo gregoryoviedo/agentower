@@ -1,7 +1,7 @@
-// fakecopilot simulates the Copilot CLI's ACP server (copilot --acp)
-// for adapter tests. It speaks newline-delimited JSON-RPC 2.0:
-// initialize, session/new, session/resume and session/prompt, streaming
-// one agent_message_chunk before answering the prompt.
+// fakeacp simulates a minimal ACP agent for the acp package tests: it
+// speaks newline-delimited JSON-RPC and answers initialize,
+// session/new, session/resume, session/prompt (streaming one
+// agent_message_chunk) and session/request_permission.
 package main
 
 import (
@@ -39,18 +39,34 @@ func main() {
 				"result": map[string]any{
 					"protocolVersion":   1,
 					"agentCapabilities": map[string]any{"loadSession": true},
-					"agentInfo":         map[string]any{"name": "fakecopilot", "version": "1.0"},
+					"agentInfo":         map[string]any{"name": "fakeacp", "version": "1.0"},
 				},
 			})
 		case "session/new":
 			send(map[string]any{
 				"jsonrpc": "2.0", "id": id,
-				"result": map[string]any{"sessionId": "sess_" + randHex()},
+				"result": map[string]any{"sessionId": "acp-session-1"},
 			})
 		case "session/resume":
 			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}})
+		case "session/request_permission":
+			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"outcome": "selected", "optionId": "allow"}})
 		case "session/prompt":
-			replyPrompt(m.Params, send)
+			send(map[string]any{
+				"jsonrpc": "2.0",
+				"method":  "session/update",
+				"params": map[string]any{
+					"sessionId": sessionIDOf(m.Params),
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content": map[string]any{
+							"content": map[string]any{
+								"content": map[string]any{"type": "text", "text": "fakeacp reply"},
+							},
+						},
+					},
+				},
+			})
 			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"stopReason": "end_turn"}})
 		default:
 			send(map[string]any{
@@ -61,36 +77,10 @@ func main() {
 	}
 }
 
-func replyPrompt(params json.RawMessage, send func(map[string]any)) {
+func sessionIDOf(params json.RawMessage) string {
 	var p struct {
 		SessionID string `json:"sessionId"`
-		Prompt    []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"prompt"`
 	}
 	_ = json.Unmarshal(params, &p)
-	send(map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "session/update",
-		"params": map[string]any{
-			"sessionId": p.SessionID,
-			"update": map[string]any{
-				"sessionUpdate": "agent_message_chunk",
-				"content": map[string]any{
-					"content": map[string]any{
-						"content": map[string]any{"type": "text", "text": "fakecopilot reply"},
-					},
-				},
-			},
-		},
-	})
-}
-
-func randHex() string {
-	b := make([]byte, 8)
-	for i := range b {
-		b[i] = "0123456789abcdef"[os.Getpid()%16]
-	}
-	return string(b)
+	return p.SessionID
 }

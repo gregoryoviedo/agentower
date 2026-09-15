@@ -2,10 +2,12 @@ package copilot_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/copilot"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 // TestSessionLocatorAgainstRealInstall exercises the locator
@@ -19,10 +21,13 @@ func TestSessionLocatorAgainstRealInstall(t *testing.T) {
 		Now:      func() time.Time { return time.Now() },
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("real copilot install not available: %v", err)
 	}
 	sess, err := loc.Locate(context.Background())
 	if err != nil {
+		if errors.Is(err, domain.ErrNoActiveSession) {
+			t.Skipf("real copilot install has no sessions: %v", err)
+		}
 		t.Fatalf("locate against real install: %v", err)
 	}
 	t.Logf("real copilot session: id=%s title=%q project=%q dir=%q touched=%s previewLen=%d",

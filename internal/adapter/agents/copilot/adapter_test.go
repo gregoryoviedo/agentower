@@ -13,9 +13,7 @@ import (
 	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
-// buildFakeCopilot compiles the JSON-RPC fixture that speaks the
-// subset of LSP the adapter needs (initialize / initialized /
-// didOpen / didChange / inlineCompletion).
+// buildFakeCopilot compiles the fake ACP server fixture.
 func buildFakeCopilot(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -71,7 +69,7 @@ func TestAdapterSendPromptRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	reply, err := adapter.SendPrompt(ctx, session.ID, "hola copilot")
 	if err != nil {

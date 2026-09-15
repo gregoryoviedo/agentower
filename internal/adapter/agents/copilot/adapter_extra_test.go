@@ -2,27 +2,29 @@ package copilot_test
 
 import (
 	"context"
-	"errors"
+	"database/sql"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/copilot"
-	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
-// requireGit skips the test if git is not installed (CI runners in
-// slim containers sometimes lack it).
+// requireGitCopilot skips the test if git is not installed or does not
+// actually run (e.g. an unaccepted Xcode license breaks /usr/bin/git).
 func requireGitCopilot(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)
 	}
+	if out, err := exec.Command("git", "--version").CombinedOutput(); err != nil {
+		t.Skipf("git unusable: %v (%s)", err, out)
+	}
 }
 
-// initGitRepoCopilot creates a fresh git repo with one commit so
-// subsequent `git diff --name-status` has something to compare against.
 func initGitRepoCopilot(t *testing.T) string {
 	t.Helper()
 	requireGitCopilot(t)
@@ -43,8 +45,6 @@ func initGitRepoCopilot(t *testing.T) string {
 	return dir
 }
 
-// gitCommitCopilot commits everything currently staged with the given
-// message so the next `git diff --name-status` can detect changes.
 func gitCommitCopilot(t *testing.T, dir, msg string) {
 	t.Helper()
 	requireGitCopilot(t)
@@ -55,7 +55,6 @@ func gitCommitCopilot(t *testing.T, dir, msg string) {
 	}
 }
 
-// gitAddCopilot stages the given path so the next commit picks it up.
 func gitAddCopilot(t *testing.T, dir, path string) {
 	t.Helper()
 	requireGitCopilot(t)
@@ -67,10 +66,7 @@ func gitAddCopilot(t *testing.T, dir, path string) {
 }
 
 // TestAdapterFileStatusFallsBackToGitDiff covers the git diff fallback
-// the adapter uses when the Copilot LSP does not expose a native file
-// diff endpoint. We seed a git repo with a tracked file, commit it,
-// then modify the tracked file and assert the labels match git's
-// --name-status codes.
+// used when Copilot does not expose a native file diff endpoint.
 func TestAdapterFileStatusFallsBackToGitDiff(t *testing.T) {
 	workdir := initGitRepoCopilot(t)
 	tracked := filepath.Join(workdir, "tracked.txt")
@@ -83,7 +79,6 @@ func TestAdapterFileStatusFallsBackToGitDiff(t *testing.T) {
 	gitAddCopilot(t, workdir, "tracked.txt")
 	gitCommitCopilot(t, workdir, "initial")
 
-	// Modify the tracked file so the next diff has a real change.
 	if err := os.WriteFile(tracked, []byte("v2"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -103,13 +98,10 @@ func TestAdapterFileStatusFallsBackToGitDiff(t *testing.T) {
 		t.Errorf("tracked.txt status = %q, want modified (full changes: %#v)", got["tracked.txt"], changes)
 	}
 	if _, ok := got["untracked.txt"]; ok {
-		t.Errorf("untracked.txt should not appear in --name-status output (it is untracked)")
+		t.Errorf("untracked.txt should not appear in --name-status output")
 	}
 }
 
-// TestAdapterFileStatusWithoutWorkdirIsSafe covers the edge case where
-// the manager has not been told the project folder yet. The adapter
-// returns an empty slice rather than panicking.
 func TestAdapterFileStatusWithoutWorkdirIsSafe(t *testing.T) {
 	mgr := copilot.NewManager(copilot.LaunchConfig{Mode: copilot.LaunchCLI, Bin: "copilot"})
 	adapter := copilot.NewAdapter(mgr)
@@ -122,37 +114,47 @@ func TestAdapterFileStatusWithoutWorkdirIsSafe(t *testing.T) {
 	}
 }
 
-// TestAdapterListMessagesReturnsCapabilitiesLimited mirrors the
-// documented limitation: the Copilot LSP does not expose a session
-// history today, so the adapter returns ErrAgentCapabilitiesLimited
-// and the Telegram UI hides the /messages button.
-func TestAdapterListMessagesReturnsCapabilitiesLimited(t *testing.T) {
+// TestAdapterListMessagesReadsDisk seeds a session-store.db with a
+// turns row and asserts the adapter surfaces the user/assistant pair.
+func TestAdapterListMessagesReadsDisk(t *testing.T) {
+	root := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(root, "session-store.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE turns (
+		id INTEGER PRIMARY KEY,
+		session_id TEXT NOT NULL,
+		turn_index INTEGER,
+		user_message TEXT,
+		assistant_response TEXT,
+		timestamp TEXT
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)`,
+		"sess-1", 0, "hola copilot", "respuesta copilot", "2026-09-15T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	mgr := copilot.NewManager(copilot.LaunchConfig{Mode: copilot.LaunchCLI, Bin: "copilot"})
 	mgr.MarkStarted(t.TempDir())
 	adapter := copilot.NewAdapter(mgr)
-	_, err := adapter.ListMessages(context.Background(), "x")
-	if err == nil {
-		t.Fatal("ListMessages returned nil; want ErrAgentCapabilitiesLimited")
+	adapter.SetStateDir(root)
+	msgs, err := adapter.ListMessages(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
 	}
-	if !errors.Is(err, domain.ErrAgentCapabilitiesLimited) {
-		t.Fatalf("err = %v, want ErrAgentCapabilitiesLimited", err)
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
 	}
-}
-
-// TestNewSessionIDIsHexShape verifies the session id the adapter hands
-// back is UUID-shaped so it survives JSON encoding without escaping.
-func TestNewSessionIDIsHexShape(t *testing.T) {
-	// newSessionID is package-private; we exercise it through
-	// CreateSession so the test stays in the copilot_test package.
-	// We don't actually invoke the LSP (that needs a real server);
-	// instead we assert the public Title prefix the adapter uses is
-	// stable: "Copilot " + first 8 hex chars. A regression in the
-	// id format would also show up here.
-	sessions := []string{"abcdef0123456789", "fedcba9876543210"}
-	for _, id := range sessions {
-		title := "Copilot " + id[:8]
-		if len(title) != len("Copilot ")+8 {
-			t.Fatalf("title %q has unexpected length", title)
-		}
+	if msgs[0].Info.Role != "user" || msgs[0].Parts[0].Text != "hola copilot" {
+		t.Fatalf("msg[0] = %+v", msgs[0])
+	}
+	if msgs[1].Info.Role != "assistant" || msgs[1].Parts[0].Text != "respuesta copilot" {
+		t.Fatalf("msg[1] = %+v", msgs[1])
 	}
 }

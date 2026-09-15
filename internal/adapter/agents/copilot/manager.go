@@ -1,77 +1,77 @@
+// Package copilot implements the AgentAdapter for GitHub Copilot over
+// the Agent Client Protocol (ACP). The Copilot CLI exposes an ACP
+// server via `copilot --acp`; Agentower drives it to create, resume and
+// continue Copilot sessions from Telegram, and reads the VS Code
+// session store (~/Library/Application Support/Code/...) to detect
+// sessions the user started in the editor.
 package copilot
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os/exec"
 	"sync"
+
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/acp"
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
-// LaunchMode tells the manager how to spawn the language server.
-// "cli" means the binary speaks LSP directly (the modern `copilot`
-// CLI). "bundle" means we found a VS Code extension bundle and must
-// run it through `node`.
+// LaunchMode keeps the old LSP-era launch modes for compatibility.
 type LaunchMode int
 
 const (
+	// LaunchCLI spawns the Copilot CLI binary directly (ACP).
 	LaunchCLI LaunchMode = iota
+	// LaunchBundle is kept for compatibility but ACP mode always uses
+	// the CLI; bundle-based launches are no longer supported.
 	LaunchBundle
 )
 
-// LaunchConfig holds everything the manager needs to bring the
-// language server up.
+// LaunchConfig holds the launch configuration for the Copilot CLI.
 type LaunchConfig struct {
 	Mode   LaunchMode
-	Bin    string // for LaunchCLI: the copilot binary. for LaunchBundle: the node binary.
-	Bundle string // for LaunchBundle: the path to dist/extension.js.
+	Bin    string
+	Bundle string
 }
 
-// Manager owns the GitHub Copilot LSP subprocess. It spawns the
-// language server on demand and reuses the connection across prompts
-// so the chat history is preserved for as long as the user keeps
-// driving the same chat.
+// Manager owns the Copilot ACP subprocess lifecycle. Sessions are lazy:
+// the subprocess spawns on first use and stays alive across prompts.
 type Manager struct {
-	cfg LaunchConfig
-
-	workdirMu sync.RWMutex
-	workdir   string
+	bin string
 
 	mu      sync.Mutex
+	workdir string
 	running bool
-	conn    *conn
+	agent   *acp.Agent
+	known   map[string]bool
 }
 
-type conn struct {
-	cmd *exec.Cmd
-	cl  *client
-}
-
+// NewManager builds the manager. cfg.Bin is the copilot CLI binary; the
+// ACP mode ignores LaunchBundle.
 func NewManager(cfg LaunchConfig) *Manager {
-	return &Manager{cfg: cfg}
+	bin := cfg.Bin
+	if bin == "" {
+		bin = "copilot"
+	}
+	return &Manager{bin: bin, known: map[string]bool{}}
 }
 
 // MarkStarted flags the manager as owning a Copilot subprocess.
 func (m *Manager) MarkStarted(workdir string) {
-	m.workdirMu.Lock()
-	m.workdir = workdir
-	m.workdirMu.Unlock()
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.workdir = workdir
 	m.running = true
-	m.mu.Unlock()
 }
 
-// MarkStopped clears the running flag and tears down the LSP
-// subprocess.
+// MarkStopped clears the running flag and tears down the subprocess.
 func (m *Manager) MarkStopped() {
 	m.mu.Lock()
-	conn := m.conn
-	m.conn = nil
+	defer m.mu.Unlock()
 	m.running = false
-	m.mu.Unlock()
-	if conn != nil {
-		_ = conn.cmd.Process.Kill()
+	if m.agent != nil {
+		m.agent.Close()
+		m.agent = nil
 	}
 }
 
@@ -84,68 +84,105 @@ func (m *Manager) Started() bool {
 
 // WorkingDir returns the cwd the manager was last marked with.
 func (m *Manager) WorkingDir() string {
-	m.workdirMu.RLock()
-	defer m.workdirMu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.workdir
 }
 
-// Client returns the LSP client. Lazy-starts the subprocess on first
-// call; subsequent calls reuse the connection.
-func (m *Manager) Client(ctx context.Context) (*client, error) {
+// HasSession reports whether the given session id was created or
+// resumed through this manager.
+func (m *Manager) HasSession(id string) bool {
 	m.mu.Lock()
-	if m.conn != nil {
-		c := m.conn
-		m.mu.Unlock()
-		return c.cl, nil
-	}
-	m.mu.Unlock()
-
-	c, err := m.dial(ctx)
-	if err != nil {
-		return nil, err
-	}
-	m.mu.Lock()
-	m.conn = c
-	m.running = true
-	m.mu.Unlock()
-	return c.cl, nil
+	defer m.mu.Unlock()
+	return m.known[id]
 }
 
-// dial spawns the LSP subprocess and runs the initialize handshake.
-func (m *Manager) dial(ctx context.Context) (*conn, error) {
-	workdir := m.WorkingDir()
+// ensureAgent lazily starts the Copilot ACP subprocess.
+func (m *Manager) ensureAgent(ctx context.Context) (*acp.Agent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.agent != nil && m.agent.Running() {
+		return m.agent, nil
+	}
+	workdir := m.workdir
 	if workdir == "" {
 		return nil, errors.New("copilot manager has no working directory")
 	}
-	var argv []string
-	switch m.cfg.Mode {
-	case LaunchCLI:
-		argv = []string{m.cfg.Bin, "--stdio"}
-	case LaunchBundle:
-		argv = []string{m.cfg.Bin, m.cfg.Bundle, "--stdio"}
-	default:
-		return nil, errors.New("copilot manager: unknown launch mode")
+	agent := acp.NewAgent(acp.AgentOptions{
+		Bin:      m.bin,
+		Args:     []string{"--acp", "--allow-all"},
+		Framing:  acp.FramingNewline,
+		TrustAll: true,
+	})
+	if err := agent.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start copilot acp: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir = workdir
-	cmd.Stderr = io.Discard
-	stdin, err := cmd.StdinPipe()
+	m.agent = agent
+	return agent, nil
+}
+
+// SendPrompt resumes (when needed) the session and sends a message,
+// returning the assistant's text reply.
+func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (string, error) {
+	agent, err := m.ensureAgent(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("open stdin: %w", err)
+		return "", err
 	}
-	stdout, err := cmd.StdoutPipe()
+	m.mu.Lock()
+	known := m.known[sessionID]
+	m.mu.Unlock()
+	if !known {
+		if err := agent.ResumeSession(ctx, sessionID, m.WorkingDir()); err != nil {
+			return "", fmt.Errorf("resume copilot session: %w", err)
+		}
+		m.mu.Lock()
+		m.known[sessionID] = true
+		m.mu.Unlock()
+	}
+	return agent.Prompt(ctx, sessionID, text)
+}
+
+// CreateSession starts a fresh Copilot session via ACP.
+func (m *Manager) CreateSession(ctx context.Context, cwd string) (string, error) {
+	agent, err := m.ensureAgent(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("open stdout: %w", err)
+		return "", err
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("spawn copilot: %w", err)
+	id, err := agent.NewSession(ctx, cwd)
+	if err != nil {
+		return "", err
 	}
-	cl := newClient(stdout, stdin)
-	conn := &conn{cmd: cmd, cl: cl}
-	go cl.run()
-	if err := cl.initialize(ctx); err != nil {
-		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("lsp initialize: %w", err)
+	m.mu.Lock()
+	m.known[id] = true
+	m.mu.Unlock()
+	return id, nil
+}
+
+// listSessions returns the Copilot sessions for the working directory
+// via ACP session/list.
+func (m *Manager) listSessions(ctx context.Context) ([]domain.Session, error) {
+	agent, err := m.ensureAgent(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return conn, nil
+	infos, err := agent.ListSessions(ctx, m.WorkingDir())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Session, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, domain.Session{
+			ID:        info.ID,
+			Directory: info.Cwd,
+			Title:     firstNonEmpty(info.Summary, info.Title, "Copilot "+truncateID(info.ID)),
+		})
+	}
+	return out, nil
+}
+
+func truncateID(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
 }

@@ -9,9 +9,8 @@ import (
 	"time"
 )
 
-// buildFakeKiro compiles the fixture binary the same way the adapter
-// tests do. The fixture emits a single assistant turn then exits so
-// the manager's parser can be exercised end-to-end.
+// buildFakeKiro compiles the fake ACP server fixture the same way the
+// adapter tests do.
 func buildFakeKiro(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -31,52 +30,20 @@ func buildFakeKiro(t *testing.T) string {
 	return bin
 }
 
-// TestSendPromptReturnsAssistantReply is the happy path the rest of
-// the suite relies on: a single round-trip must return the assistant
-// text in the form the parser accumulates (one event with one text
-// part) without losing the framing.
 func TestSendPromptReturnsAssistantReply(t *testing.T) {
 	m := NewManager(buildFakeKiro(t), 4099)
 	m.MarkStarted(t.TempDir())
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	reply, err := m.SendPrompt(ctx, "session-1", "hola")
 	if err != nil {
 		t.Fatalf("SendPrompt: %v", err)
-	}
-	if reply == "" {
-		t.Fatal("SendPrompt returned empty reply")
 	}
 	if want := "fakekiro reply: hola"; reply != want {
 		t.Fatalf("reply = %q, want %q", reply, want)
 	}
 }
 
-// TestEnsureSessionRespawnsAfterSubprocessExits documents the
-// subprocess lifecycle: the Kiro CLI consumes one prompt per
-// subprocess because the adapter closes stdin after writing. A
-// second prompt for the same session id must therefore trigger a
-// fresh spawn and succeed.
-func TestEnsureSessionRespawnsAfterSubprocessExits(t *testing.T) {
-	m := NewManager(buildFakeKiro(t), 4099)
-	m.MarkStarted(t.TempDir())
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if _, err := m.SendPrompt(ctx, "shared", "primera"); err != nil {
-		t.Fatalf("first SendPrompt: %v", err)
-	}
-	if !m.HasSession("shared") {
-		t.Fatal("HasSession(shared) = false after first prompt; manager dropped session state")
-	}
-	if _, err := m.SendPrompt(ctx, "shared", "segunda"); err != nil {
-		t.Fatalf("second SendPrompt: %v", err)
-	}
-}
-
-// TestSendPromptRequiresWorkingDirectory covers the precondition
-// check: before MarkStarted the manager has no working dir and
-// SendPrompt must fail with a clear error rather than silently
-// spawning the subprocess in the bot's cwd.
 func TestSendPromptRequiresWorkingDirectory(t *testing.T) {
 	m := NewManager(buildFakeKiro(t), 4099)
 	_, err := m.SendPrompt(context.Background(), "session-1", "hola")
@@ -88,49 +55,6 @@ func TestSendPromptRequiresWorkingDirectory(t *testing.T) {
 	}
 }
 
-// TestNewSessionIDIsHexShape verifies the manager hands out
-// UUID-shaped ids. The wire format expects hex-only strings.
-func TestNewSessionIDIsHexShape(t *testing.T) {
-	m := NewManager("kiro", 4099)
-	id := m.NewSessionID()
-	if len(id) != 32 {
-		t.Fatalf("len(id) = %d, want 32", len(id))
-	}
-	for _, r := range id {
-		if r >= '0' && r <= '9' {
-			continue
-		}
-		if r >= 'a' && r <= 'f' {
-			continue
-		}
-		t.Fatalf("id %q contains non-hex character %q", id, r)
-	}
-	if m.NewSessionID() == id {
-		t.Fatal("two NewSessionID calls returned the same value")
-	}
-}
-
-// TestHasSessionReflectsState exercises the in-memory session map
-// the manager exposes. After SendPrompt the session is known; before
-// it the map is empty.
-func TestHasSessionReflectsState(t *testing.T) {
-	m := NewManager(buildFakeKiro(t), 4099)
-	m.MarkStarted(t.TempDir())
-	if m.HasSession("ghost") {
-		t.Fatal("HasSession(ghost) = true on a fresh manager")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := m.SendPrompt(ctx, "real", "hola"); err != nil {
-		t.Fatalf("SendPrompt: %v", err)
-	}
-	if !m.HasSession("real") {
-		t.Fatal("HasSession(real) = false after SendPrompt")
-	}
-}
-
-// TestMarkStartedAndStoppedReflectsState covers the lifecycle flags
-// the adapter reads on every prompt.
 func TestMarkStartedAndStoppedReflectsState(t *testing.T) {
 	m := NewManager("kiro", 4099)
 	if m.Started() {
@@ -149,40 +73,27 @@ func TestMarkStartedAndStoppedReflectsState(t *testing.T) {
 	}
 }
 
-// TestAdapterListMessagesReturnsCapabilitiesLimited mirrors the
-// documented limitation: Kiro does not expose a session-history
-// format today, so the adapter returns ErrAgentCapabilitiesLimited so
-// the Telegram UI hides the /messages button.
-func TestAdapterListMessagesReturnsCapabilitiesLimited(t *testing.T) {
-	m := NewManager("kiro", 4099)
-	m.MarkStarted(t.TempDir())
-	adapter := NewAdapter(m)
-	_, err := adapter.ListMessages(context.Background(), "x")
-	if err == nil {
-		t.Fatal("ListMessages returned nil; want ErrAgentCapabilitiesLimited")
+func TestHasSessionReflectsCreatedSessions(t *testing.T) {
+	m := NewManager(buildFakeKiro(t), 4099)
+	dir := t.TempDir()
+	m.MarkStarted(dir)
+	if m.HasSession("ghost") {
+		t.Fatal("HasSession(ghost) = true on a fresh manager")
 	}
-	if !contains(err.Error(), "session history") {
-		t.Fatalf("err = %v, want one mentioning session history", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	id, err := m.CreateSession(ctx, dir)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
 	}
-}
-
-// TestAdapterFileStatusReturnsCapabilitiesLimited covers the same
-// limitation for the file diff path.
-func TestAdapterFileStatusReturnsCapabilitiesLimited(t *testing.T) {
-	m := NewManager("kiro", 4099)
-	m.MarkStarted(t.TempDir())
-	adapter := NewAdapter(m)
-	_, err := adapter.FileStatus(context.Background(), "x")
-	if err == nil {
-		t.Fatal("FileStatus returned nil; want ErrAgentCapabilitiesLimited")
+	if id == "" {
+		t.Fatal("CreateSession returned empty id")
 	}
-	if !contains(err.Error(), "file diff") {
-		t.Fatalf("err = %v, want one mentioning file diff", err)
+	if !m.HasSession(id) {
+		t.Fatal("HasSession(id) = false after CreateSession")
 	}
 }
 
-// contains is a tiny helper so the test does not pull in strings just
-// for one substring check.
 func contains(haystack, needle string) bool {
 	if needle == "" {
 		return true

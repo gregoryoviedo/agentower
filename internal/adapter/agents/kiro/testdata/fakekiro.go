@@ -1,74 +1,103 @@
-// fakekiro simulates the Kiro CLI for adapter tests. Kiro is the most
-// under-documented of the supported agents, so the fixture keeps the
-// protocol minimal: one session.init, one user echo, one assistant
-// reply, one turn.completed. If real Kiro ships a richer format the
-// adapter can grow without breaking the test contract.
+// fakekiro simulates the Kiro CLI's ACP server (kiro-cli acp) for
+// adapter tests. It speaks newline-delimited JSON-RPC 2.0: initialize,
+// session/new, session/resume and session/prompt, streaming one
+// agent_message_chunk before answering the prompt.
 package main
 
 import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 )
 
-func main() {
-	prompt := readPrompt()
-	out := bufio.NewWriter(os.Stdout)
-	defer out.Flush()
-	enc := json.NewEncoder(out)
-	_ = enc.Encode(map[string]any{
-		"type":    "session",
-		"subtype": "init",
-		"cwd":     os.Getenv("PWD"),
-	})
-	_ = enc.Encode(map[string]any{
-		"type": "user",
-		"message": map[string]any{
-			"role":    "user",
-			"content": []map[string]any{{"type": "text", "text": prompt}},
-		},
-	})
-	_ = enc.Encode(map[string]any{
-		"type": "assistant",
-		"message": map[string]any{
-			"role":    "assistant",
-			"content": []map[string]any{{"type": "text", "text": "fakekiro reply: " + prompt}},
-		},
-	})
-	_ = enc.Encode(map[string]any{
-		"type":        "turn.completed",
-		"is_error":    false,
-		"duration_ms": 1,
-	})
-	_, _ = io.Copy(io.Discard, os.Stdin)
+type msg struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-func readPrompt() string {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		var event map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+func main() {
+	out := bufio.NewWriter(os.Stdout)
+	send := func(m map[string]any) {
+		b, _ := json.Marshal(m)
+		fmt.Fprintln(out, string(b))
+		_ = out.Flush()
+	}
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		var m msg
+		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			continue
 		}
-		if event["type"] != "user" {
-			continue
-		}
-		msg, _ := event["message"].(map[string]any)
-		content, _ := msg["content"].([]any)
-		for _, c := range content {
-			part, _ := c.(map[string]any)
-			if part["type"] == "text" {
-				if text, ok := part["text"].(string); ok {
-					return text
-				}
-			}
+		id := m.ID
+		switch m.Method {
+		case "initialize":
+			send(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]any{
+					"protocolVersion":   1,
+					"agentCapabilities": map[string]any{"loadSession": true},
+					"agentInfo":         map[string]any{"name": "fakekiro", "version": "1.0"},
+				},
+			})
+		case "session/new":
+			send(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]any{"sessionId": "sess_" + randHex()},
+			})
+		case "session/resume":
+			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}})
+		case "session/prompt":
+			replyPrompt(m.Params, send)
+			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"stopReason": "end_turn"}})
+		default:
+			send(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"error": map[string]any{"code": -32601, "message": "method not found: " + m.Method},
+			})
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, "fakekiro: read stdin:", err)
+}
+
+func replyPrompt(params json.RawMessage, send func(map[string]any)) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+		Prompt    []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"prompt"`
 	}
-	return ""
+	_ = json.Unmarshal(params, &p)
+	text := ""
+	for _, block := range p.Prompt {
+		if block.Type == "text" {
+			text = block.Text
+			break
+		}
+	}
+	send(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "session/update",
+		"params": map[string]any{
+			"sessionId": p.SessionID,
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content": map[string]any{
+					"content": map[string]any{
+						"content": map[string]any{"type": "text", "text": "fakekiro reply: " + text},
+					},
+				},
+			},
+		},
+	})
+}
+
+func randHex() string {
+	b := make([]byte, 8)
+	for i := range b {
+		b[i] = "0123456789abcdef"[os.Getpid()%16]
+	}
+	return string(b)
 }

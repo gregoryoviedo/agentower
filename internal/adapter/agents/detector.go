@@ -133,12 +133,12 @@ func (d *Detector) scanKiro(ctx context.Context) domain.AgentDescriptor {
 		Capabilities: domain.AgentCapabilities{
 			Health:        true,
 			ListProjects:  false,
-			ListSessions:  false,
+			ListSessions:  true,
 			CreateSession: true,
 			SendPrompt:    true,
 			Revert:        false,
-			FileStatus:    false, // Kiro does not expose file diffs natively
-			ListMessages:  false,
+			FileStatus:    true, // falls back to `git diff` in the adapter
+			ListMessages:  true, // reads ~/.kiro messages.jsonl
 		},
 	}
 	if bin == "" {
@@ -192,7 +192,7 @@ func copilotCapabilities() domain.AgentCapabilities {
 		SendPrompt:    true,
 		Revert:        false,
 		FileStatus:    true, // falls back to `git diff`
-		ListMessages:  false,
+		ListMessages:  true, // reads VS Code session-store.db
 	}
 }
 

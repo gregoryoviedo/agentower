@@ -201,13 +201,20 @@ final class ConfigStore {
     private static func augmentedPathEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let extras = [
+        var extras = [
             home + "/.local/bin",
             home + "/.bin",
             home + "/bin",
+            home + "/.npm-global/bin",
             "/opt/homebrew/bin",
             "/usr/local/bin",
         ]
+        // nvm-managed node versions install global binaries per version.
+        if let nvmVersions = try? FileManager.default.contentsOfDirectory(atPath: home + "/.nvm/versions/node") {
+            for version in nvmVersions {
+                extras.append(home + "/.nvm/versions/node/" + version + "/bin")
+            }
+        }
         var parts = (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
             .split(separator: ":")
             .map(String.init)
