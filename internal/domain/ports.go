@@ -58,6 +58,7 @@ type AgentCapabilities struct {
 	Revert        bool
 	FileStatus    bool
 	ListMessages  bool
+	Questions     bool
 }
 
 // AgentDescriptor is the boot-time fingerprint of a single agent: where
@@ -89,6 +90,33 @@ type AgentAdapter interface {
 	Revert(ctx context.Context, sessionID string) error
 	FileStatus(ctx context.Context, sessionID string) ([]FileChange, error)
 	ListMessages(ctx context.Context, sessionID string) ([]Message, error)
+}
+
+// QuestionAdapter is the optional capability an agent exposes when it
+// can pause mid-turn to ask the user a structured question with
+// options. Only opencode implements it today; the watcher and handler
+// type-assert to this interface so adapters without it are unaffected.
+type QuestionAdapter interface {
+	// ListQuestions returns the question requests opencode is currently
+	// blocking on for the session (usually zero or one).
+	ListQuestions(ctx context.Context, sessionID string) ([]PendingQuestion, error)
+	// ReplyQuestion sends the ordered answers back to opencode so the
+	// blocked turn can continue. One entry per question, each a list of
+	// selected labels.
+	ReplyQuestion(ctx context.Context, sessionID, requestID string, answers [][]string) error
+}
+
+// QuestionBroker is the in-process store of the pending question for a
+// chat. The Publisher implements it: the SessionWatcher publishes the
+// question the agent is blocked on and the Handler reads/answers it.
+type QuestionBroker interface {
+	SetPendingQuestion(q PendingQuestion)
+	PendingQuestion(chatID int64) (PendingQuestion, bool)
+	// Answer stores the selection for question index. settle=true marks
+	// the prompt finalized; settle=false only updates an in-progress
+	// multi-select. ready reports whether every prompt is settled.
+	Answer(chatID int64, requestID string, index int, values []string, settle bool) (PendingQuestion, bool)
+	ClearPendingQuestion(chatID int64)
 }
 
 // AgentRegistry is the read/write facade over the set of adapters the

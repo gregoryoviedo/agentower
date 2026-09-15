@@ -180,6 +180,120 @@ func TestServerStateAndNotifyFlow(t *testing.T) {
 	}
 }
 
+func TestPublisherPendingQuestionPreservesProgress(t *testing.T) {
+	p := control.NewPublisher()
+	p.SetPendingQuestion(domain.PendingQuestion{
+		ChatID:    7,
+		SessionID: "ses1",
+		RequestID: "req1",
+		Questions: []domain.QuestionPrompt{{Header: "Modo", Question: "¿Cómo?", Options: []domain.QuestionOption{{Label: "Uno"}, {Label: "Dos"}}}},
+	})
+	if _, ready := p.Answer(7, "req1", 0, []string{"Dos"}, true); !ready {
+		t.Fatal("single question should be ready after one answer")
+	}
+	// Re-publishing the same request (as the watcher does every tick) must
+	// keep the user's answer and settled marker.
+	p.SetPendingQuestion(domain.PendingQuestion{
+		ChatID:    7,
+		SessionID: "ses1",
+		RequestID: "req1",
+		Questions: []domain.QuestionPrompt{{Header: "Modo", Question: "¿Cómo?", Options: []domain.QuestionOption{{Label: "Uno"}, {Label: "Dos"}}}},
+	})
+	q, ok := p.PendingQuestion(7)
+	if !ok {
+		t.Fatal("pending question missing")
+	}
+	if len(q.Answers) != 1 || len(q.Answers[0]) != 1 || q.Answers[0][0] != "Dos" || !q.Settled[0] {
+		t.Fatalf("answer progress lost: %+v", q)
+	}
+}
+
+func TestPublisherAnswersFlowToReady(t *testing.T) {
+	p := control.NewPublisher()
+	p.SetPendingQuestion(domain.PendingQuestion{
+		ChatID:    7,
+		RequestID: "req2",
+		Questions: []domain.QuestionPrompt{
+			{Question: "q1", Options: []domain.QuestionOption{{Label: "a"}}},
+			{Question: "q2", Options: []domain.QuestionOption{{Label: "b"}}},
+		},
+	})
+	if _, ready := p.Answer(7, "req2", 0, []string{"a"}, true); ready {
+		t.Fatal("should not be ready after one of two answers")
+	}
+	if _, ready := p.Answer(7, "req2", 1, []string{"b"}, true); !ready {
+		t.Fatal("should be ready after both answers")
+	}
+	p.ClearPendingQuestion(7)
+	if _, ok := p.PendingQuestion(7); ok {
+		t.Fatal("pending question should be cleared")
+	}
+}
+
+func TestServerQuestionNotifyFlow(t *testing.T) {
+	store := newStore(t)
+	publisher := control.NewPublisher()
+	publisher.SetPendingQuestion(domain.PendingQuestion{
+		ChatID:    7,
+		SessionID: "ses1",
+		AgentKind: domain.AgentOpenCode,
+		RequestID: "req1",
+		Questions: []domain.QuestionPrompt{
+			{Header: "Modo", Question: "¿Cómo?", Options: []domain.QuestionOption{{Label: "Uno"}, {Label: "Dos"}}, Custom: true},
+			{Header: "Extra", Question: "¿Y esto?", Options: []domain.QuestionOption{{Label: "Sí"}}},
+		},
+	})
+	notifier := &recordingNotifier{}
+	srv := control.NewServer(publisher, store, publisher, notifier, newDiscardLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := srv.Start(ctx, "127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	resp, err := http.Post("http://"+srv.Addr()+"/question-notify", "application/json",
+		bytes.NewBufferString(`{"chat_id":7,"request_id":"req1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /question-notify status = %d, body = %s", resp.StatusCode, body)
+	}
+	if notifier.count.Load() != 2 {
+		t.Fatalf("notifier count = %d, want 2 (one message per question)", notifier.count.Load())
+	}
+	lastRaw := notifier.lastResp.Load()
+	last, ok := lastRaw.(domain.BotResponse)
+	if !ok {
+		t.Fatalf("last resp = %T", lastRaw)
+	}
+	foundButton := false
+	for _, row := range last.Buttons {
+		for _, btn := range row {
+			if btn.Data == "q|7|1|0" {
+				foundButton = true
+			}
+		}
+	}
+	if !foundButton {
+		t.Fatalf("expected question option button on second message, got %+v", last.Buttons)
+	}
+
+	// A second notify must not resend.
+	resp, err = http.Post("http://"+srv.Addr()+"/question-notify", "application/json",
+		bytes.NewBufferString(`{"chat_id":7,"request_id":"req1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("second POST /question-notify status = %d, want 409", resp.StatusCode)
+	}
+}
+
 func TestServerRejectsUnknownChatForNotify(t *testing.T) {
 	store := newStore(t)
 	publisher := control.NewPublisher()

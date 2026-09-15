@@ -86,6 +86,133 @@ func TestClientSendPromptReturnsAssistantText(t *testing.T) {
 	}
 }
 
+// TestClientListQuestionsParsesOptionsAndFiltersSession covers the
+// canonical /api/question response: one request with options, filtered to
+// the requested session.
+func TestClientListQuestionsParsesOptionsAndFiltersSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/question":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `[
+				{"id":"q1","sessionID":"s1","questions":[
+					{"header":"Modo","question":"¿Cómo lo hago?","options":[
+						{"label":"Opción 1","description":"Recomendado"},
+						{"label":"Opción 2","description":"Otra"}
+					],"multiple":false,"custom":true}
+				]},
+				{"id":"q9","sessionID":"other","questions":[{"question":"x","options":[{"label":"y"}]}]}
+			]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	questions, err := client.ListQuestions(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("ListQuestions: %v", err)
+	}
+	if len(questions) != 1 {
+		t.Fatalf("questions = %d, want 1", len(questions))
+	}
+	q := questions[0]
+	if q.RequestID != "q1" || q.SessionID != "s1" {
+		t.Fatalf("request = %+v", q)
+	}
+	if len(q.Questions) != 1 || q.Questions[0].Header != "Modo" {
+		t.Fatalf("prompt = %+v", q.Questions)
+	}
+	if len(q.Questions[0].Options) != 2 || q.Questions[0].Options[0].Label != "Opción 1" {
+		t.Fatalf("options = %+v", q.Questions[0].Options)
+	}
+	if !q.Questions[0].Custom {
+		t.Fatal("custom should default to true")
+	}
+}
+
+// TestClientListQuestionsFallsBackToLegacyPath covers an older opencode
+// that only exposes /question and returns a single flattened question.
+func TestClientListQuestionsFallsBackToLegacyPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/question" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"q2","sessionId":"s1","question":"¿Cuál?","header":"H","options":[{"label":"A"}],"custom":false}`)
+	}))
+	defer server.Close()
+
+	client, err := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	questions, err := client.ListQuestions(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("ListQuestions: %v", err)
+	}
+	if len(questions) != 1 || questions[0].RequestID != "q2" {
+		t.Fatalf("questions = %+v", questions)
+	}
+	if len(questions[0].Questions) != 1 || questions[0].Questions[0].Question != "¿Cuál?" {
+		t.Fatalf("prompt = %+v", questions[0].Questions)
+	}
+	if questions[0].Questions[0].Custom {
+		t.Fatal("custom=false should be preserved")
+	}
+}
+
+// TestClientReplyQuestionPostsAnswers checks the V2 reply route and body,
+// falling back to the V1 route when the first returns 404.
+func TestClientReplyQuestionPostsAnswers(t *testing.T) {
+	var gotPath string
+	var gotAnswers [][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path == "/api/session/s1/question/q1/reply" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path != "/api/session/s1/question/request/q1/reply" {
+			http.NotFound(w, r)
+			return
+		}
+		gotPath = r.URL.Path
+		var body struct {
+			Answers [][]string `json:"answers"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		gotAnswers = body.Answers
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, err := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ReplyQuestion(context.Background(), "s1", "q1", [][]string{{"Opción 1"}}); err != nil {
+		t.Fatalf("ReplyQuestion: %v", err)
+	}
+	if gotPath != "/api/session/s1/question/request/q1/reply" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if len(gotAnswers) != 1 || len(gotAnswers[0]) != 1 || gotAnswers[0][0] != "Opción 1" {
+		t.Fatalf("answers = %+v", gotAnswers)
+	}
+}
+
 func TestClientRevertPicksLastUserMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -16,6 +16,7 @@ final class IdleNotifier {
         let activeSession: String?
         let pendingNotifChat: Int64
         let lastCompleted: CompletedSession?
+        let pendingQuestion: PendingQuestion?
 
         enum CodingKeys: String, CodingKey {
             case chatId = "ChatID"
@@ -23,6 +24,19 @@ final class IdleNotifier {
             case activeSession = "ActiveSession"
             case pendingNotifChat = "PendingNotifChat"
             case lastCompleted = "LastCompleted"
+            case pendingQuestion = "PendingQuestion"
+        }
+    }
+
+    struct PendingQuestion: Decodable {
+        let chatId: Int64
+        let sessionId: String
+        let requestId: String
+
+        enum CodingKeys: String, CodingKey {
+            case chatId = "ChatID"
+            case sessionId = "SessionID"
+            case requestId = "RequestID"
         }
     }
 
@@ -60,6 +74,7 @@ final class IdleNotifier {
     // become annoying; users can always tune them later in Settings.
     private static let pollInterval: TimeInterval = 5
     private static let idleThreshold: TimeInterval = 5 * 60
+    private static let questionIdleThreshold: TimeInterval = 3 * 60
     private static let completionFreshness: TimeInterval = 60 * 60
     private static let cooldownAfterNotify: TimeInterval = 60
 
@@ -69,6 +84,7 @@ final class IdleNotifier {
     private var pollTimer: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "dev.agentower.app.idlenotifier", qos: .utility)
     private var lastNotifySentAt: Date?
+    private var lastQuestionRequestID: String?
 
     init(supportDirectory: URL = AppPaths.supportDirectory) {
         self.controlFileURL = supportDirectory.appendingPathComponent("control.json")
@@ -108,6 +124,23 @@ final class IdleNotifier {
             return
         }
         let idle = idleSeconds()
+
+        // A pending question wins over completion: while the agent is
+        // blocked waiting for an answer, the user must be pinged with the
+        // question and its options rather than a "task done" message.
+        if let question = state.pendingQuestion {
+            guard idle >= Self.questionIdleThreshold else {
+                return
+            }
+            guard lastQuestionRequestID != question.requestId else {
+                return
+            }
+            os_log("triggering question notification: idle=%{public}.0fs request=%{public}@",
+                   log: logger, type: .info, idle, question.requestId)
+            triggerQuestionNotification(addr: addr, chatID: question.chatId, requestID: question.requestId)
+            return
+        }
+
         guard idle >= Self.idleThreshold else {
             // User is back; nothing to do.
             return
@@ -185,6 +218,35 @@ final class IdleNotifier {
         }.resume()
     }
 
+    private func triggerQuestionNotification(addr: String, chatID: Int64, requestID: String) {
+        let url = URL(string: "http://\(addr)/question-notify")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "chat_id": chatID,
+            "request_id": requestID,
+        ])
+        session.dataTask(with: request) { [weak self] _, response, error in
+            if let error = error {
+                os_log("question notify failed: %{public}@", log: self?.logger ?? .default, type: .error,
+                       error.localizedDescription)
+                return
+            }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            // 2xx: sent. 409: already notified or already answered — either
+            // way we stop retrying this request id.
+            if (200...299).contains(code) {
+                self?.lastQuestionRequestID = requestID
+                self?.showQuestionLocalNotification()
+            } else if code == 409 {
+                self?.lastQuestionRequestID = requestID
+            } else {
+                os_log("question notify non-2xx: %{public}d", log: self?.logger ?? .default, type: .error, code)
+            }
+        }.resume()
+    }
+
     // MARK: - macOS user notification
 
     private func requestNotificationPermissionIfNeeded() {
@@ -204,6 +266,24 @@ final class IdleNotifier {
         content.sound = .default
         let request = UNNotificationRequest(
             identifier: "agentower.completion.\(completion.sessionId)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                os_log("local notification failed: %{public}@", log: self.logger, type: .error,
+                       error.localizedDescription)
+            }
+        }
+    }
+
+    private func showQuestionLocalNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "El agente necesita tu respuesta"
+        content.body = "opencode hizo una pregunta y está esperando. Responde desde Telegram."
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "agentower.question.\(lastQuestionRequestID ?? UUID().uuidString)",
             content: content,
             trigger: nil
         )

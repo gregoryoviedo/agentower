@@ -32,6 +32,7 @@ type Handler struct {
 	snapshot      domain.SnapshotPublisher
 	completions   domain.CompletionPublisher
 	locators      domain.ActiveLocatorRegistry
+	questions     domain.QuestionBroker
 	workspaceRoot string
 	staleAfter    time.Duration
 	now           func() time.Time
@@ -89,6 +90,11 @@ func (h *Handler) SetCompletionPublisher(p domain.CompletionPublisher) { h.compl
 // command fans out to. Passing nil disables the command (it returns the
 // "no locator available" message).
 func (h *Handler) SetActiveLocators(r domain.ActiveLocatorRegistry) { h.locators = r }
+
+// SetQuestionBroker wires the store of pending agent questions so the
+// handler can answer them from Telegram, either through inline buttons
+// or a free-form text reply.
+func (h *Handler) SetQuestionBroker(q domain.QuestionBroker) { h.questions = q }
 
 // SetStaleAfter overrides the staleness threshold used by /continuar.
 // Sessions whose TouchedAt is older than the threshold are filtered out
@@ -191,6 +197,9 @@ func helpResponse() domain.BotResponse {
 const telegramMaxMessageLen = 4096
 
 func (h *Handler) HandleText(ctx context.Context, chatID int64, text string) (domain.BotResponse, error) {
+	if resp, handled, err := h.answerPendingQuestionFromText(ctx, chatID, text); handled {
+		return resp, err
+	}
 	adapter, kind, err := h.activeAdapter(chatID)
 	if err != nil {
 		return agentUnavailableResponse(err), nil
@@ -307,6 +316,33 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 			return expiredNavigation(), nil
 		}
 		return h.confirmActiveSession(ctx, chatID, parts[2], parts[3])
+	}
+	// "q" and "qd" are the pending-question callbacks. "q" carries the
+	// question and option indices; "qd" finalizes a multi-select prompt.
+	if parts[0] == "q" || parts[0] == "qd" {
+		parsed, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || parsed != chatID {
+			return expiredNavigation(), nil
+		}
+		if parts[0] == "q" {
+			if len(parts) != 4 {
+				return expiredNavigation(), nil
+			}
+			qIdx, errQ := strconv.Atoi(parts[2])
+			optIdx, errO := strconv.Atoi(parts[3])
+			if errQ != nil || errO != nil {
+				return expiredNavigation(), nil
+			}
+			return h.answerQuestionOption(ctx, chatID, qIdx, optIdx)
+		}
+		if len(parts) != 3 {
+			return expiredNavigation(), nil
+		}
+		qIdx, err := strconv.Atoi(parts[2])
+		if err != nil {
+			return expiredNavigation(), nil
+		}
+		return h.settleQuestion(ctx, chatID, qIdx)
 	}
 	switch parts[0] {
 	case "e":
@@ -426,6 +462,238 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 	default:
 		return expiredNavigation(), nil
 	}
+}
+
+// answerQuestionOption handles a tap on one of a question's option
+// buttons. Single-select prompts are answered and finalized in one tap;
+// multi-select prompts toggle the option until "Listo" is tapped.
+func (h *Handler) answerQuestionOption(ctx context.Context, chatID int64, qIdx, optIdx int) (domain.BotResponse, error) {
+	if h.questions == nil {
+		return expiredNavigation(), nil
+	}
+	pending, ok := h.questions.PendingQuestion(chatID)
+	if !ok || qIdx < 0 || qIdx >= len(pending.Questions) {
+		return domain.BotResponse{Text: "Esa pregunta ya no está disponible.", Edit: true}, nil
+	}
+	prompt := pending.Questions[qIdx]
+	if optIdx < 0 || optIdx >= len(prompt.Options) {
+		return expiredNavigation(), nil
+	}
+	label := prompt.Options[optIdx].Label
+	if prompt.Multiple {
+		updated, ready := h.questions.Answer(chatID, pending.RequestID, qIdx, toggleAnswer(pending.Answers[qIdx], label), false)
+		if ready {
+			return h.submitAnswers(ctx, chatID, updated)
+		}
+		resp := questionRender(chatID, updated, qIdx)
+		resp.Edit = true
+		return resp, nil
+	}
+	updated, ready := h.questions.Answer(chatID, pending.RequestID, qIdx, []string{label}, true)
+	if ready {
+		return h.submitAnswers(ctx, chatID, updated)
+	}
+	resp := questionAnsweredResponse(updated, qIdx, label)
+	resp.Edit = true
+	return resp, nil
+}
+
+// settleQuestion finalizes a multi-select prompt whose options were
+// already toggled.
+func (h *Handler) settleQuestion(ctx context.Context, chatID int64, qIdx int) (domain.BotResponse, error) {
+	if h.questions == nil {
+		return expiredNavigation(), nil
+	}
+	pending, ok := h.questions.PendingQuestion(chatID)
+	if !ok || qIdx < 0 || qIdx >= len(pending.Questions) {
+		return domain.BotResponse{Text: "Esa pregunta ya no está disponible.", Edit: true}, nil
+	}
+	values := pending.Answers[qIdx]
+	if len(values) == 0 && !pending.Questions[qIdx].Custom {
+		resp := questionRender(chatID, pending, qIdx)
+		resp.Edit = true
+		return resp, nil
+	}
+	updated, ready := h.questions.Answer(chatID, pending.RequestID, qIdx, values, true)
+	if ready {
+		return h.submitAnswers(ctx, chatID, updated)
+	}
+	resp := questionAnsweredResponse(updated, qIdx, strings.Join(values, ", "))
+	resp.Edit = true
+	return resp, nil
+}
+
+// answerPendingQuestionFromText routes a free-form Telegram message to a
+// pending question instead of the model. This is how the user types a
+// custom answer. Returns handled=true when there was a question to answer.
+func (h *Handler) answerPendingQuestionFromText(ctx context.Context, chatID int64, text string) (domain.BotResponse, bool, error) {
+	if h.questions == nil {
+		return domain.BotResponse{}, false, nil
+	}
+	pending, ok := h.questions.PendingQuestion(chatID)
+	if !ok || len(pending.Questions) == 0 {
+		return domain.BotResponse{}, false, nil
+	}
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return domain.BotResponse{Text: "Estoy esperando tu respuesta a la pregunta del agente."}, true, nil
+	}
+	idx := firstUnsettled(pending.Settled)
+	if idx < 0 {
+		idx = 0
+	}
+	values := []string{trimmed}
+	if pending.Questions[idx].Multiple {
+		values = splitAnswers(trimmed)
+	}
+	updated, ready := h.questions.Answer(chatID, pending.RequestID, idx, values, true)
+	if ready {
+		resp, err := h.submitAnswers(ctx, chatID, updated)
+		return resp, true, err
+	}
+	return questionRender(chatID, updated, idx), true, nil
+}
+
+// submitAnswers sends the collected answers back to the agent and clears
+// the pending question so normal completion tracking resumes.
+func (h *Handler) submitAnswers(ctx context.Context, chatID int64, pending domain.PendingQuestion) (domain.BotResponse, error) {
+	kind := pending.AgentKind
+	if kind == "" {
+		kind, _ = h.registry.Active(chatID)
+	}
+	adapter, err := h.registry.Get(kind)
+	if err != nil {
+		return domain.BotResponse{Text: "No pude resolver el agente que preguntó: " + err.Error(), Edit: true}, nil
+	}
+	qa, ok := adapter.(domain.QuestionAdapter)
+	if !ok {
+		return domain.BotResponse{Text: "Ese agente no admite respuestas a preguntas.", Edit: true}, nil
+	}
+	if err := qa.ReplyQuestion(ctx, pending.SessionID, pending.RequestID, pending.Answers); err != nil {
+		return domain.BotResponse{Text: "No pude enviar tus respuestas al agente: " + err.Error(), Edit: true}, nil
+	}
+	h.questions.ClearPendingQuestion(chatID)
+	return domain.BotResponse{Text: "✅ Listo, envié tus respuestas al agente. Te aviso cuando termine.", Edit: true}, nil
+}
+
+// questionRender re-renders a question with its current selections so
+// multi-select prompts can show check marks while the user picks.
+func questionRender(chatID int64, pending domain.PendingQuestion, index int) domain.BotResponse {
+	if index < 0 || index >= len(pending.Questions) {
+		return domain.BotResponse{Text: "Pregunta no disponible."}
+	}
+	prompt := pending.Questions[index]
+	selected := map[string]bool{}
+	if index < len(pending.Answers) {
+		for _, v := range pending.Answers[index] {
+			selected[v] = true
+		}
+	}
+	var b strings.Builder
+	b.WriteString("⏸️ El agente opencode necesita tu respuesta\n\n")
+	if len(pending.Questions) > 1 {
+		fmt.Fprintf(&b, "Pregunta %d/%d\n", index+1, len(pending.Questions))
+	}
+	if prompt.Header != "" {
+		b.WriteString("**" + prompt.Header + "**\n")
+	}
+	b.WriteString(prompt.Question)
+	for i, opt := range prompt.Options {
+		marker := ""
+		if selected[opt.Label] {
+			marker = " ✅"
+		}
+		fmt.Fprintf(&b, "\n\n%d. %s%s", i+1, opt.Label, marker)
+		if opt.Description != "" {
+			b.WriteString(" — " + opt.Description)
+		}
+	}
+	if prompt.Custom {
+		b.WriteString("\n\n✍️ También puedes responder escribiendo el texto.")
+	}
+	resp := domain.BotResponse{Text: b.String()}
+	for i, opt := range prompt.Options {
+		label := opt.Label
+		if selected[opt.Label] {
+			label = "✅ " + label
+		}
+		resp.Buttons = append(resp.Buttons, []domain.BotButton{{
+			Text: label,
+			Data: fmt.Sprintf("q|%d|%d|%d", chatID, index, i),
+		}})
+	}
+	if prompt.Multiple {
+		resp.Buttons = append(resp.Buttons, []domain.BotButton{{
+			Text: "✅ Listo",
+			Data: fmt.Sprintf("qd|%d|%d", chatID, index),
+		}})
+	}
+	return resp
+}
+
+// questionAnsweredResponse renders the confirmation shown after a
+// single-select prompt has been answered, mentioning any questions still
+// waiting.
+func questionAnsweredResponse(pending domain.PendingQuestion, index int, answer string) domain.BotResponse {
+	header := pending.Questions[index].Header
+	if header == "" {
+		header = fmt.Sprintf("Pregunta %d/%d", index+1, len(pending.Questions))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "✅ %s: %s\n", header, answer)
+	if remaining := unsettledCount(pending.Settled); remaining > 1 {
+		fmt.Fprintf(&b, "\nQuedan %d preguntas por responder.", remaining-1)
+	}
+	return domain.BotResponse{Text: b.String()}
+}
+
+func toggleAnswer(current []string, value string) []string {
+	out := make([]string, 0, len(current)+1)
+	found := false
+	for _, v := range current {
+		if v == value {
+			found = true
+			continue
+		}
+		out = append(out, v)
+	}
+	if !found {
+		out = append(out, value)
+	}
+	return out
+}
+
+func splitAnswers(text string) []string {
+	parts := strings.FieldsFunc(text, func(r rune) bool { return r == ',' || r == ';' })
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return []string{strings.TrimSpace(text)}
+	}
+	return out
+}
+
+func firstUnsettled(settled []bool) int {
+	for i, ok := range settled {
+		if !ok {
+			return i
+		}
+	}
+	return -1
+}
+
+func unsettledCount(settled []bool) int {
+	n := 0
+	for _, ok := range settled {
+		if !ok {
+			n++
+		}
+	}
+	return n
 }
 
 func directoryResponse(state domain.NavigationState, entries []domain.DirectoryEntry) domain.BotResponse {

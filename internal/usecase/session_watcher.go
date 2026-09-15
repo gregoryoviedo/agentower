@@ -28,6 +28,7 @@ type SessionWatcher struct {
 	log       domain.SessionEventLog
 	state     domain.StateRepository
 	publisher domain.CompletionPublisher
+	questions domain.QuestionBroker
 	logger    *slog.Logger
 
 	activeInterval time.Duration
@@ -145,6 +146,14 @@ func (w *SessionWatcher) SetRequestNotifier(fn func(chatID int64)) {
 	w.requestNotify = fn
 }
 
+// SetQuestionBroker wires the store the watcher publishes the question
+// an agent is blocked on. When set, a pending question suppresses the
+// completion snapshot so the user is not told the task finished while
+// the agent is actually waiting for an answer.
+func (w *SessionWatcher) SetQuestionBroker(q domain.QuestionBroker) {
+	w.questions = q
+}
+
 // Current returns the session id and agent kind currently being
 // observed, if any.
 func (w *SessionWatcher) Current() (chatID int64, kind domain.AgentKind, sessionID string) {
@@ -256,6 +265,19 @@ func (w *SessionWatcher) tick(ctx context.Context) error {
 	stableSince := w.lastStable
 	w.mu.Unlock()
 
+	// A pending question means the agent paused mid-turn waiting for
+	// the user. Never record a completion in that state; keep the idle
+	// clock fresh so the completion timer only starts after the user
+	// answers and the agent actually resumes.
+	if w.questionBlocks(ctx, adapter, kind, chatID, sessionID) {
+		w.mu.Lock()
+		w.lastCount = count
+		w.lastStable = w.now()
+		w.recorded = false
+		w.mu.Unlock()
+		return nil
+	}
+
 	if stableSince.IsZero() {
 		return nil
 	}
@@ -279,6 +301,37 @@ func (w *SessionWatcher) tick(ctx context.Context) error {
 	w.recorded = true
 	w.mu.Unlock()
 	return nil
+}
+
+// questionBlocks reports whether the agent is currently blocked on a
+// structured question. When it is, the question is published to the
+// broker (preserving any answers the user already gave) and the method
+// returns true. When the question has been resolved, the broker entry is
+// cleared. Adapters without the optional QuestionAdapter capability, or
+// transient list failures, are treated as "no question".
+func (w *SessionWatcher) questionBlocks(ctx context.Context, adapter domain.AgentAdapter, kind domain.AgentKind, chatID int64, sessionID string) bool {
+	if w.questions == nil {
+		return false
+	}
+	qa, ok := adapter.(domain.QuestionAdapter)
+	if !ok {
+		return false
+	}
+	pending, err := qa.ListQuestions(ctx, sessionID)
+	if err != nil {
+		// Transient: keep whatever state we had and retry next tick.
+		return false
+	}
+	if len(pending) == 0 {
+		w.questions.ClearPendingQuestion(chatID)
+		return false
+	}
+	q := pending[0]
+	q.ChatID = chatID
+	q.AgentKind = kind
+	q.AskedAt = w.now()
+	w.questions.SetPendingQuestion(q)
+	return true
 }
 
 // lastMessageIsFinal reports whether the most recent message is an

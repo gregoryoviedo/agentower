@@ -98,6 +98,41 @@ type CompletedSession struct {
 	NotifiedAt  time.Time
 }
 
+// QuestionOption is a single choice the model offers when it asks the
+// user to pick between alternatives (opencode "question" tool).
+type QuestionOption struct {
+	Label       string
+	Description string
+}
+
+// QuestionPrompt is one question inside a pending opencode question
+// request: a short header, the full question, the available options,
+// and whether the user may pick more than one / type a custom answer.
+type QuestionPrompt struct {
+	Header   string
+	Question string
+	Options  []QuestionOption
+	Multiple bool
+	Custom   bool
+}
+
+// PendingQuestion is the projection of an opencode question request
+// that is currently blocking a session until the user answers.
+// Answers holds, per prompt, the selected labels (opencode accepts a
+// list to support multi-select and custom text). Settled marks a prompt
+// as finalized so a multi-select prompt can be edited before submitting.
+type PendingQuestion struct {
+	ChatID     int64
+	SessionID  string
+	AgentKind  AgentKind
+	RequestID  string
+	Questions  []QuestionPrompt
+	Answers    [][]string
+	Settled    []bool
+	AskedAt    time.Time
+	NotifiedAt time.Time
+}
+
 // Snapshot is the projected state the bot exposes over its local HTTP
 // control socket so the macOS wrapper can decide when to send the
 // "task done" notification.
@@ -108,6 +143,7 @@ type Snapshot struct {
 	ActiveAgent      AgentKind
 	LastCompleted    *CompletedSession
 	PendingNotifChat int64
+	PendingQuestion  *PendingQuestion
 }
 
 // ActiveSession is the projection of "what is running on the Mac right

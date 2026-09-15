@@ -207,6 +207,7 @@ func main() {
 	handler.SetSessionEventLog(repository)
 	handler.SetSnapshotPublisher(publisher)
 	handler.SetActiveLocators(locators)
+	handler.SetQuestionBroker(publisher)
 	handler.SetStaleAfter(cfg.StaleAfter)
 
 	watcherOpts := usecase.SessionWatcherOptions{
@@ -216,6 +217,7 @@ func main() {
 	}
 	watcher := usecase.NewSessionWatcher(registry, repository, repository, publisher, watcherOpts)
 	watcher.SetRequestNotifier(publisher.RequestNotification)
+	watcher.SetQuestionBroker(publisher)
 	handler.SetSessionController(watcher)
 	handler.SetCompletionPublisher(publisher)
 	go func() {

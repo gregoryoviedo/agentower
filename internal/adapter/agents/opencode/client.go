@@ -107,6 +107,42 @@ type fileChangeDTO struct {
 	Status  string `json:"status,omitempty"`
 }
 
+// Question wire shapes. opencode has iterated on this contract, so the
+// DTOs stay tolerant: ids/session ids accept both camelCase spellings,
+// and a request may carry either a "questions" array or a single
+// "question" object.
+type questionOptionDTO struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+type questionPromptDTO struct {
+	Header   string              `json:"header"`
+	Question string              `json:"question"`
+	Options  []questionOptionDTO `json:"options"`
+	Multiple bool                `json:"multiple"`
+	Custom   *bool               `json:"custom"`
+}
+
+type questionRequestDTO struct {
+	ID           string              `json:"id"`
+	RequestID    string              `json:"requestID"`
+	RequestIDAlt string              `json:"requestId"`
+	SessionID    string              `json:"sessionID"`
+	SessionIDAlt string              `json:"sessionId"`
+	Questions    []questionPromptDTO `json:"questions"`
+	Question     json.RawMessage     `json:"question"`
+	Header       string              `json:"header"`
+	Options      []questionOptionDTO `json:"options"`
+	Multiple     bool                `json:"multiple"`
+	Custom       *bool               `json:"custom"`
+}
+
+type questionReplyPayload struct {
+	RequestID string     `json:"requestID,omitempty"`
+	Answers   [][]string `json:"answers"`
+}
+
 func NewClient(baseURL string, httpClient *http.Client) (*Client, error) {
 	parsed, err := url.Parse(strings.TrimRight(baseURL, "/"))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -135,6 +171,10 @@ func (c *Client) DisplayName() string { return "opencode" }
 // Compile-time guarantee that the opencode client satisfies the
 // multi-agent port. The registry will pick it up via this assertion.
 var _ domain.AgentAdapter = (*Client)(nil)
+
+// opencode is the only agent with a structured question API today, so
+// it also implements the optional QuestionAdapter port.
+var _ domain.QuestionAdapter = (*Client)(nil)
 
 func (c *Client) Health(ctx context.Context) (domain.HealthStatus, error) {
 	var response struct {
@@ -286,6 +326,168 @@ func (c *Client) ListMessages(ctx context.Context, sessionID string) ([]domain.M
 		})
 	}
 	return messages, nil
+}
+
+// questionListPaths are the endpoints that have shipped across
+// opencode releases, newest first. ListQuestions tries them in order so
+// the adapter works across versions.
+var questionListPaths = []string{"/api/question", "/question", "/api/question/request"}
+
+// ListQuestions returns the question requests opencode is currently
+// blocking on. It filters to the given session so the watcher only sees
+// questions for the session it is following.
+func (c *Client) ListQuestions(ctx context.Context, sessionID string) ([]domain.PendingQuestion, error) {
+	if sessionID == "" {
+		return nil, errors.New("session id must not be empty")
+	}
+	var lastErr error
+	for _, path := range questionListPaths {
+		var raw json.RawMessage
+		if err := c.getJSON(ctx, path, &raw); err != nil {
+			lastErr = err
+			continue
+		}
+		requests := decodeQuestionRequests(raw)
+		out := make([]domain.PendingQuestion, 0, len(requests))
+		for _, req := range requests {
+			if pending, ok := questionRequestToPending(req, sessionID); ok {
+				out = append(out, pending)
+			}
+		}
+		return out, nil
+	}
+	return nil, lastErr
+}
+
+// ReplyQuestion submits the answers for a request. The answers slice is
+// positional: one entry per question, each a list of selected labels.
+func (c *Client) ReplyQuestion(ctx context.Context, sessionID, requestID string, answers [][]string) error {
+	if sessionID == "" || requestID == "" {
+		return errors.New("session id and request id must not be empty")
+	}
+	payload := questionReplyPayload{RequestID: requestID, Answers: answers}
+	paths := []string{
+		"/api/session/" + url.PathEscape(sessionID) + "/question/" + url.PathEscape(requestID) + "/reply",
+		"/api/session/" + url.PathEscape(sessionID) + "/question/request/" + url.PathEscape(requestID) + "/reply",
+		"/api/question/" + url.PathEscape(requestID) + "/reply",
+	}
+	var firstErr error
+	for _, path := range paths {
+		if err := c.doJSON(ctx, http.MethodPost, path, payload, nil); err == nil {
+			return nil
+		} else if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// decodeQuestionRequests accepts the shapes opencode has used for the
+// question list: a bare array, an object wrapping "questions" or
+// "data", or a single request object.
+func decodeQuestionRequests(raw json.RawMessage) []questionRequestDTO {
+	var arr []questionRequestDTO
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr
+	}
+	var wrapper struct {
+		Questions []questionRequestDTO `json:"questions"`
+		Data      []questionRequestDTO `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err == nil && (len(wrapper.Questions) > 0 || len(wrapper.Data) > 0) {
+		if len(wrapper.Data) > 0 {
+			return wrapper.Data
+		}
+		return wrapper.Questions
+	}
+	var single questionRequestDTO
+	if err := json.Unmarshal(raw, &single); err == nil {
+		return []questionRequestDTO{single}
+	}
+	return nil
+}
+
+func questionRequestToPending(dto questionRequestDTO, sessionID string) (domain.PendingQuestion, bool) {
+	sid := firstNonEmpty(dto.SessionID, dto.SessionIDAlt)
+	if sid == "" {
+		sid = sessionID
+	}
+	if sessionID != "" && sid != "" && sid != sessionID {
+		return domain.PendingQuestion{}, false
+	}
+	requestID := firstNonEmpty(dto.RequestID, dto.RequestIDAlt, dto.ID)
+	prompts := questionPrompts(dto)
+	if requestID == "" || len(prompts) == 0 {
+		return domain.PendingQuestion{}, false
+	}
+	return domain.PendingQuestion{
+		SessionID: sid,
+		RequestID: requestID,
+		Questions: prompts,
+	}, true
+}
+
+func questionPrompts(dto questionRequestDTO) []domain.QuestionPrompt {
+	if len(dto.Questions) > 0 {
+		out := make([]domain.QuestionPrompt, 0, len(dto.Questions))
+		for _, q := range dto.Questions {
+			out = append(out, toDomainPrompt(q))
+		}
+		return out
+	}
+	if len(dto.Question) > 0 {
+		var prompt questionPromptDTO
+		if err := json.Unmarshal(dto.Question, &prompt); err == nil && (prompt.Question != "" || len(prompt.Options) > 0) {
+			return []domain.QuestionPrompt{toDomainPrompt(prompt)}
+		}
+		var text string
+		if err := json.Unmarshal(dto.Question, &text); err == nil && text != "" {
+			return []domain.QuestionPrompt{{
+				Header:   dto.Header,
+				Question: text,
+				Options:  toDomainOptions(dto.Options),
+				Multiple: dto.Multiple,
+				Custom:   customDefault(dto.Custom),
+			}}
+		}
+	}
+	return nil
+}
+
+func toDomainPrompt(dto questionPromptDTO) domain.QuestionPrompt {
+	return domain.QuestionPrompt{
+		Header:   dto.Header,
+		Question: dto.Question,
+		Options:  toDomainOptions(dto.Options),
+		Multiple: dto.Multiple,
+		Custom:   customDefault(dto.Custom),
+	}
+}
+
+func toDomainOptions(options []questionOptionDTO) []domain.QuestionOption {
+	out := make([]domain.QuestionOption, 0, len(options))
+	for _, opt := range options {
+		out = append(out, domain.QuestionOption{Label: opt.Label, Description: opt.Description})
+	}
+	return out
+}
+
+// customDefault mirrors opencode's schema default: a question allows a
+// typed answer unless the payload explicitly sets custom=false.
+func customDefault(custom *bool) bool {
+	if custom == nil {
+		return true
+	}
+	return *custom
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, target any) error {

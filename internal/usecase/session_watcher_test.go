@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -406,5 +407,143 @@ func TestSessionWatcherWatchIDERecordsAndRequestsNotification(t *testing.T) {
 	}
 	if last.Preview != "respuesta" {
 		t.Fatalf("preview = %q, want respuesta", last.Preview)
+	}
+}
+
+// recordingQuestionBroker is a minimal domain.QuestionBroker for the
+// watcher tests: it remembers the published question and counts clears.
+type recordingQuestionBroker struct {
+	mu      sync.Mutex
+	q       *domain.PendingQuestion
+	cleared int
+}
+
+func (b *recordingQuestionBroker) SetPendingQuestion(q domain.PendingQuestion) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.q != nil && b.q.RequestID == q.RequestID {
+		return
+	}
+	cp := q
+	b.q = &cp
+}
+
+func (b *recordingQuestionBroker) PendingQuestion(chatID int64) (domain.PendingQuestion, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.q == nil || b.q.ChatID != chatID {
+		return domain.PendingQuestion{}, false
+	}
+	return *b.q, true
+}
+
+func (b *recordingQuestionBroker) Answer(int64, string, int, []string, bool) (domain.PendingQuestion, bool) {
+	return domain.PendingQuestion{}, false
+}
+
+func (b *recordingQuestionBroker) ClearPendingQuestion(chatID int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.q != nil && b.q.ChatID == chatID {
+		b.q = nil
+		b.cleared++
+	}
+}
+
+func (b *recordingQuestionBroker) clearedCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cleared
+}
+
+// TestSessionWatcherSuppressesCompletionWhileQuestionPending proves a
+// session blocked on an agent question is never recorded as complete,
+// and that the pending question is cleared once the agent moves on.
+func TestSessionWatcherSuppressesCompletionWhileQuestionPending(t *testing.T) {
+	var questionPending atomic.Bool
+	questionPending.Store(true)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/question":
+			if questionPending.Load() {
+				_, _ = w.Write([]byte(`[{"id":"q1","sessionID":"ses1","questions":[
+					{"header":"Modo","question":"¿Cómo?","options":[{"label":"Uno"},{"label":"Dos"}]}
+				]}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[]`))
+		case "/session/ses1/message":
+			_, _ = w.Write([]byte(`[
+				{"info":{"id":"u1","role":"user"},"parts":[{"type":"text","text":"hola"}]},
+				{"info":{"id":"a1","role":"assistant"},"parts":[{"type":"text","text":"¿Cómo lo hago?"}]}
+			]`))
+		case "/session":
+			_, _ = w.Write([]byte(`[{"id":"ses1","projectID":"p1","title":"Main","directory":"/tmp/work"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	client, err := agents_opencode.NewClient(server.URL, &http.Client{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pub := &recordingCompletionPublisher{}
+	broker := &recordingQuestionBroker{}
+	watcher := NewSessionWatcher(&singleAdapterRegistry{adapter: client}, store, store, pub, SessionWatcherOptions{
+		PollInterval:  10 * time.Millisecond,
+		IdleInterval:  10 * time.Millisecond,
+		IdleThreshold: 30 * time.Millisecond,
+		Clock:         time.Now,
+	})
+	watcher.SetQuestionBroker(broker)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watcher.Run(ctx)
+	}()
+	watcher.Watch(42, domain.AgentOpenCode, "ses1")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := broker.PendingQuestion(42); ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, ok := broker.PendingQuestion(42); !ok {
+		t.Fatal("watcher never published the pending question")
+	}
+	if got := pub.count.Load(); got != 0 {
+		t.Fatalf("publisher count = %d, want 0 while a question is pending", got)
+	}
+
+	// The agent resumes: the question disappears and the broker clears.
+	questionPending.Store(false)
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if broker.clearedCount() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if broker.clearedCount() == 0 {
+		t.Fatal("pending question was never cleared after it resolved")
 	}
 }
