@@ -20,9 +20,8 @@ superficie de ataque pública más allá de la API de bots de Telegram.
 ## Características
 
 - **Multi-agente** — un solo bot maneja opencode (HTTP), Claude Code
-  (stdio JSON), Kiro (stdio JSON, capacidades limitadas) y
-  GitHub Copilot (LSP). Cada chat puede cambiar de agente sobre la
-  marcha desde Telegram.
+  (stdio JSON), Kiro (ACP sobre `kiro-cli`) y GitHub Copilot (ACP/LSP).
+  Cada chat puede cambiar de agente sobre la marcha desde Telegram.
 - **Long polling a Telegram** — sin puertos expuestos, sin túneles, sin
   webhooks.
 - **Whitelist estricta por usuario** — solo el `ALLOWED_CHAT_ID` configurado
@@ -32,10 +31,19 @@ superficie de ataque pública más allá de la API de bots de Telegram.
 - **Estado persistente en SQLite** — workspace, proyecto activo, sesión
   activa, agente activo por chat y estados efímeros de navegación
   sobreviven a reinicios.
+- **Aviso de tarea completada** — cuando el agente termina y no hubo
+  actividad local, la app macOS te manda un mensaje a Telegram (a los 5
+  minutos de inactividad) con la previsualización y botones para
+  continuar o ver cambios.
+- **Preguntas respondibles desde Telegram** — si el agente se detiene a
+  pedir una decisión con opciones (hoy: opencode), el wrapper te reenvía
+  la pregunta con botones a los 3 minutos de inactividad; tu respuesta
+  (botón o texto) vuelve al agente que está corriendo en tu Mac.
 - **App nativa para macOS (opcional)** — menú-barra con toggle, settings
   con formulario, auto-start al login, sección multi-agente con detección
-  en PATH y logs accesibles desde Finder. Construye un `.app` ad-hoc
-  firmado con `make app` que embebe el binario Go.
+  en PATH y en los bundles de las apps (Kiro CLI, VS Code Copilot), y
+  logs accesibles desde Finder. Construye un `.app` ad-hoc firmado con
+  `make app` que embebe el binario Go.
 - **Binario único en Go** — sin daemon, sin GUI obligatoria, sin firma.
   Tú lo compilas, lo ejecutas y lo paras con `Ctrl+C`.
 
@@ -127,10 +135,23 @@ disponibles son:
 El bot puede manejar varios agentes de IA simultáneamente. Cada chat
 de Telegram elige su agente activo en `/projects → Usar esta carpeta`
 o vía el comando `/agent`. Los agentes disponibles son los que el
-detector encuentra en `PATH` (o en el bundle de VS Code para Copilot).
+detector encuentra en `PATH` o, si no están ahí, dentro de los bundles
+de las apps (Kiro CLI, GitHub Copilot de VS Code). Los lanzamientos
+desde la GUI (Finder/launchd) heredan un `PATH` mínimo, así que el bot
+lo aumenta con los directorios habituales del usuario
+(`~/.local/bin`, `~/.nvm/...`, Homebrew, etc.) antes de detectar.
 Cambiar de agente no apaga los demás: Agentower puede mantener
 varios procesos vivos a la vez y cambiar el "activo" en Telegram sin
 rearrancar.
+
+Cómo se comunica cada agente:
+
+| Agente    | Transporte                                  | Historial / sesiones                        |
+|-----------|---------------------------------------------|---------------------------------------------|
+| opencode  | HTTP (`opencode serve`)                     | API REST (`/session`, `/api/question`)      |
+| claude    | stdio JSON (`claude --print --output-format stream-json`) | JSONL en `~/.claude/projects/<cwd>/`        |
+| kiro      | ACP (`kiro-cli acp`)                        | JSONL en `~/.kiro/sessions/<ws>/<id>/`       |
+| copilot   | ACP (CLI) / LSP (bundle de VS Code)         | `session-store.db` de VS Code globalStorage |
 
 Puertos reservados por agente (cada uno override-able por env):
 
@@ -170,7 +191,7 @@ Sea como sea, el bot siempre apaga el servidor con `SIGTERM` cuando recibe
 | `/watch [sesión]`      | Vigila la sesión activa (o la pasada por id) hasta que termine. |
 | `/continue`            | Reactiva la última sesión completada.                    |
 | `/resume`              | Detecta la sesión que se está ejecutando en tu Mac y te ofrece seguirla desde Telegram. |
-| texto libre            | Prompt directo a la sesión activa del agente.            |
+| texto libre            | Prompt directo a la sesión activa del agente. Si hay una pregunta pendiente del agente, el texto se envía como **respuesta a esa pregunta**. |
 
 Los Inline Keyboards manejan el resto: carpetas, "Atrás", "Inicio", "Usar
 esta carpeta", selección de agente, selección de sesión y "Nueva sesión".
@@ -193,6 +214,41 @@ la vez y el bot cambia el "activo" en Telegram sin matar los demás:
 > Si el agente activo está apagado, cualquier comando (`/status`,
 > `/sessions`, `/diff`, `/undo`, texto libre) devuelve un mensaje pidiéndote
 > ejecutar `/init`.
+
+## Notificaciones por inactividad
+
+El wrapper de macOS observa cuánto tiempo llevas sin tocar el teclado o
+el mouse y consulta el estado del bot por un socket local. Con eso
+dispara dos flujos, pensados para cuando te alejas de la computadora:
+
+### Tarea completada (5 minutos)
+
+1. El `SessionWatcher` detecta que la sesión dejó de cambiar y guarda un
+   snapshot de completado.
+2. Si pasan **5 minutos sin actividad local**, la app le pide al bot que
+   te avise por Telegram.
+3. Recibes un mensaje con proyecto, sesión, previsualización y botones
+   **▶️ Continuar sesión** y **📝 Ver cambios**.
+
+### Pregunta del agente (3 minutos)
+
+Aplica a agentes que pueden pausar a mitad de una tarea para pedir una
+decisión con opciones (hoy **opencode**, vía su *question tool*).
+
+1. El `SessionWatcher` detecta la pregunta pendiente y **no** marca la
+   tarea como completada (el agente no terminó, está esperando).
+2. Si pasan **3 minutos sin actividad local**, la pregunta se reenvía a
+   Telegram: encabezado, pregunta y una opción por botón (más el aviso de
+   que podés responder con texto si la pregunta admite respuesta libre).
+3. Respondés tocando una opción o escribiendo el texto. La respuesta se
+   envía al agente que corre en tu Mac, que continúa la tarea.
+4. Si son varias preguntas, se muestran una por una; al responderlas
+   todas se envían juntas al agente. Cuando la tarea termina, entra el
+   flujo normal de "tarea completada".
+
+Los umbrales (3 y 5 minutos) están en `IdleNotifier.swift`. El aviso
+Telegram para una pregunta ya enviada no se repite; si la respondiste en
+la terminal, el bot descarta el aviso pendiente.
 
 ## App nativa de macOS
 
@@ -312,17 +368,23 @@ Hexagonal / Clean Architecture en Go, con tres capas concéntricas:
 ```text
 internal/
   domain/      entidades (Project, Session, RuntimeState, NavigationState,
-               FileChange, BotButton, BotResponse) y puertos
-               (WorkspaceFS, StateRepository, NavigationRepository,
-               OpenCodeClient, BotHandler, OpenCodeServerManager)
-  usecase/     navegador del workspace, navegación, handler de comandos
-               (Handler) con sentinels de error (ErrNavigationNotFound,
-               ErrUnauthorizedNavigation, ErrServerNotRunning, …)
+               FileChange, Message, CompletedSession, PendingQuestion,
+               BotButton, BotResponse) y puertos (WorkspaceFS,
+               StateRepository, NavigationRepository, AgentAdapter,
+               AgentRegistry, AgentServerManager, SessionLocator,
+               SessionEventLog, SnapshotPublisher, CompletionPublisher,
+               QuestionAdapter, QuestionBroker, ChatNotifier, BotHandler)
+  usecase/     navegador del workspace, navegación, Handler de comandos,
+               SessionWatcher (polling de la sesión: completados y
+               preguntas) y sentinels de error del dominio
   adapter/
-    opencode/  cliente REST para opencode serve + manager de subprocess
+    agents/    opencode (HTTP), claude (stdio JSON), kiro (ACP + JSONL),
+               copilot (ACP/LSP) + registry y detector (PATH + bundles)
     telegram/  long polling con telebot.v3, whitelist, callbacks,
                parser markdown → HTML
     storage/   repositorio SQLite (WAL, una conexión)
+    control/   servidor HTTP local para el wrapper macOS (/state,
+               /notify, /question-notify)
     workspace/ adaptador de filesystem
     config/    cargador de .env (godotenv)
 cmd/remote-bot/  composition root
@@ -332,6 +394,11 @@ La capa de dominio no tiene dependencias externas; todo lo demás va detrás
 de interfaces declaradas por el dominio. Esto permite que los tests
 sustituyan SQLite por un store en memoria y OpenCode por un servidor
 `httptest`.
+
+El wrapper de macOS y el bot hablan por un socket local (`/state`,
+`/notify`, `/question-notify`): el bot nunca abre puertos hacia afuera y
+el wrapper nunca hace llamadas de red propias, solo consulta ese socket
+en `127.0.0.1`.
 
 Sobre el binario, en macOS, vive opcionalmente la app nativa
 `Agentower.app` (SwiftUI + AppKit) que actúa como launcher con UI,
@@ -375,10 +442,12 @@ código fuente.
 .
 ├── cmd/remote-bot/              punto de entrada Go
 ├── internal/
-│   ├── adapter/                 OpenCode, Telegram, SQLite, filesystem
+│   ├── adapter/                 agentes (opencode/claude/kiro/copilot),
+│   │                            Telegram, SQLite, control local, filesystem
 │   ├── config/                  cargador de .env
 │   ├── domain/                  entidades y puertos
-│   └── usecase/                 navegador del workspace, navegación, handler
+│   └── usecase/                 navegador del workspace, navegación, handler,
+│                                session watcher (completados y preguntas)
 ├── macos/
 │   └── Agentower/          wrapper Swift (status bar, settings, login item)
 ├── docs/

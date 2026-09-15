@@ -59,9 +59,26 @@ On macOS the wrapper is the convenient launcher:
   `ENV_FILE` override). Per-agent settings live under
   `AGENT_<KIND>_ENABLED/BIN/PORT/ARGS`.
 - Agent subprocess lifecycle: each adapter owns the per-kind lifecycle
-  (opencode via HTTP+SIGTERM, Claude/Kiro via stdio JSON-RPC,
-  Copilot via LSP). The `AgentServerManager` interface routes
-  `Start/Stop/Started/OwnsSubprocess/WorkingDir` per kind.
+  (opencode via HTTP+SIGTERM, Claude via stdio JSON, Kiro via ACP over
+  `kiro-cli acp`, Copilot via ACP CLI or LSP). The `AgentServerManager`
+  interface routes `Start/Stop/Started/OwnsSubprocess/WorkingDir` per
+  kind.
+- Agent detection probes `PATH` first and then the app bundles (Kiro CLI,
+  VS Code Copilot), and augments `PATH` with the usual per-user bin
+  directories so GUI/launchd launches find the CLIs.
+- Kiro sessions are discovered from the JSONL store under
+  `~/.kiro/sessions/<workspace>/<id>/messages.jsonl`, which is also what
+  backs `ListMessages` for completion detection.
+- Structured questions: when the active agent pauses on a multiple-choice
+  question (opencode's *question tool*, exposed as `GET /api/question`),
+  the watcher suppresses the completion snapshot and routes the question
+  through the bot. The user answers with inline buttons or free text and
+  the answer is posted back to the agent so the turn resumes.
+- Idle notifications, driven by the macOS wrapper's local control socket
+  (`/state`, `/notify`, `/question-notify`): a completion message after 5
+  minutes of local inactivity, and a question message after 3 minutes.
+  The question notification never fires twice for the same request and
+  is dropped if the user answered locally first.
 - `TELEGRAM_PROXY_URL` and `TELEGRAM_API_ROOT` for restricted networks.
 - Clean shutdown on `SIGINT` / `SIGTERM`.
 - Sentinel errors in `domain/errors.go` so every recoverable failure can
@@ -85,6 +102,10 @@ On macOS the wrapper is the convenient launcher:
 - Logs at `~/Library/Logs/Agentower/bot.log`, accessible from the
   popover menu.
 - Auto-start at login via `SMAppService.mainApp` (Settings toggle).
+- `IdleNotifier`: polls the bot's local control socket over `127.0.0.1`,
+  measures local inactivity with `CGEventSource`, and fires native
+  notifications plus the Telegram completion/question prompts described
+  above.
 - arm64-only build pipeline (`make app`) that compiles the Go binary,
   generates the icon set with `sips` + Pillow, generates the
   `.xcodeproj` with XcodeGen, and produces an ad-hoc-signed `.app` in
@@ -104,6 +125,14 @@ On macOS the wrapper is the convenient launcher:
   `xattr -dr com.apple.quarantine` on first launch).
 - IPC beyond `Process` spawning between the Swift wrapper and the Go
   bot. The wrapper does not parse the bot's output.
+- Structured-question forwarding for agents other than opencode. Claude
+  Code runs headless (`--print`) where `AskUserQuestion` is disabled, and
+  Kiro/Copilot only surface `session/request_permission`, which the ACP
+  adapters auto-approve (`TrustAll`). Permission prompts and ACP
+  elicitation are not forwarded to Telegram today.
+- Detecting questions for sessions the bot is not watching (e.g. an
+  opencode TUI session started outside Telegram and never followed by
+  the watcher).
 
 ## Trust boundaries
 
@@ -159,11 +188,16 @@ Items in priority order, intentionally small and incremental:
 9. Branch-specific agent overrides (different agents for different
    git branches on the same project).
 10. Kiro session storage format: Kiro is a moving target (Code OSS
-    fork) and the locator's defensive parser will keep working as
-    long as the index blob is at `chat.ChatSessionStore.index` in
-    `state.vscdb`. If a future release moves the data, the locator
-    will return `ErrNoActiveSession` and we'll need to point the
-    reader at the new location.
+    fork). We now read `~/.kiro/sessions/<workspace>/<id>/messages.jsonl`
+    and tolerate both the string and typed-parts `content` shapes. If a
+    future release moves the data, the reader will return
+    `ErrNoActiveSession` and we'll need to point it at the new location.
+11. Forward tool-permission prompts to Telegram. Kiro/Copilot ask via
+    ACP `session/request_permission` (options like allow-once /
+    allow-always / reject) and today the adapters auto-approve them.
+    Wiring those into the same pending-input pipeline would let the user
+    approve or deny from the phone. It reuses the `QuestionAdapter` /
+    `QuestionBroker` abstraction introduced for opencode questions.
 
 ## Change policy
 
