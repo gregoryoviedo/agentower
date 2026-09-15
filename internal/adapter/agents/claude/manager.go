@@ -340,7 +340,9 @@ func (m *Manager) readSessionMessages(_ context.Context, sessionID string) ([]do
 }
 
 // sessionHistoryRoot returns ~/.claude/projects/<sanitized cwd>. The
-// sanitization mirrors Claude Code's convention of replacing / with -.
+// sanitization mirrors Claude Code's convention; on Windows the drive
+// colon and backslashes are folded so the path matches what the CLI
+// writes there.
 func (m *Manager) sessionHistoryRoot() (string, error) {
 	workdir := m.WorkingDir()
 	if workdir == "" {
@@ -350,9 +352,5 @@ func (m *Manager) sessionHistoryRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sanitized := strings.ReplaceAll(workdir, "/", "-")
-	if sanitized != "" && !strings.HasPrefix(sanitized, "-") {
-		sanitized = "-" + sanitized
-	}
-	return filepath.Join(home, ".claude", "projects", sanitized), nil
+	return resolveProjectDir(filepath.Join(home, ".claude"), workdir), nil
 }

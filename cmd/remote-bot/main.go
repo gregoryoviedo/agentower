@@ -357,19 +357,7 @@ func ensureUserBinPath() {
 	if err != nil {
 		return
 	}
-	dirs := []string{
-		filepath.Join(home, ".local", "bin"),
-		filepath.Join(home, ".bin"),
-		filepath.Join(home, "bin"),
-		filepath.Join(home, ".npm-global", "bin"),
-		"/opt/homebrew/bin",
-		"/usr/local/bin",
-	}
-	// nvm-managed node versions install global binaries (e.g. the
-	// Copilot CLI) under one dir per version.
-	if matches, _ := filepath.Glob(filepath.Join(home, ".nvm", "versions", "node", "*", "bin")); len(matches) > 0 {
-		dirs = append(dirs, matches...)
-	}
+	dirs := userBinDirs(home)
 	path := os.Getenv("PATH")
 	for _, dir := range dirs {
 		if dir == "" || strings.Contains(path, dir) {

@@ -132,9 +132,10 @@ func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, erro
 }
 
 // sessionRoot returns the directory Claude Code writes per-cwd
-// JSONL files to. The cwd is sanitized by replacing every path
-// separator with "-" and prepending "-" so "/Users/me/proj" becomes
-// "-Users-me-proj", matching the convention in manager.go.
+// JSONL files to. The cwd is sanitized by replacing path separators
+// with "-" (and the Windows drive colon), matching the convention in
+// manager.go. An existing candidate wins so a directory created by a
+// different Claude Code release is still found.
 func (l *SessionLocator) sessionRoot(stateDir, workdir string) (string, error) {
 	base := stateDir
 	if base == "" {
@@ -144,11 +145,7 @@ func (l *SessionLocator) sessionRoot(stateDir, workdir string) (string, error) {
 		}
 		base = filepath.Join(home, ".claude")
 	}
-	sanitized := strings.ReplaceAll(workdir, string(os.PathSeparator), "-")
-	if !strings.HasPrefix(sanitized, "-") {
-		sanitized = "-" + sanitized
-	}
-	return filepath.Join(base, "projects", sanitized), nil
+	return resolveProjectDir(base, workdir), nil
 }
 
 // peekJSONL reads the tail of the file to extract the most recent

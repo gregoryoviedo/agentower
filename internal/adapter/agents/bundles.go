@@ -3,26 +3,38 @@ package agents
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // BundleBinLookup resolves agent binaries that installers drop inside
 // app bundles instead of PATH:
 //
-//   - Kiro ships as "Kiro CLI.app" (and the Kiro IDE as "Kiro.app");
-//     the CLI binary lives under Contents/MacOS.
+//   - Kiro ships as "Kiro CLI.app" (macOS) or an installer under
+//     %LOCALAPPDATA%\Programs (Windows); the CLI binary lives next to
+//     the IDE.
 //   - GitHub Copilot is built into VS Code; the extension bundle lives
-//     under the app's Resources/app/extensions/copilot.
+//     under the app's Resources/app/extensions/copilot (macOS) or
+//     resources/app/extensions/copilot (Windows).
 //
 // It is wired as the Detector's ExtraBins in the composition root so
-// GUI/launchd-launched processes — which start with a minimal PATH —
-// still detect these agents. The default Detector leaves ExtraBins nil
-// so tests stay hermetic.
+// GUI-launched processes — which start with a minimal PATH — still
+// detect these agents. The default Detector leaves ExtraBins nil so
+// tests stay hermetic.
 func BundleBinLookup(name string) string {
 	return bundleLookup(name)
 }
 
 // bundleLookup is overridable in tests.
 var bundleLookup = func(name string) string {
+	switch runtime.GOOS {
+	case "windows":
+		return bundleLookupWindows(name)
+	default:
+		return bundleLookupUnix(name)
+	}
+}
+
+func bundleLookupUnix(name string) string {
 	home, _ := os.UserHomeDir()
 	switch name {
 	case "kiro":
@@ -65,6 +77,11 @@ var bundleLookup = func(name string) string {
 			"/Applications/Antigravity.app/Contents/MacOS/agy",
 			"/Applications/Antigravity IDE.app/Contents/Resources/app/bin/agy",
 		)
+	case "opencode":
+		return firstExisting(
+			filepath.Join(home, ".opencode", "bin", "opencode"),
+			filepath.Join(home, ".bun", "bin", "opencode"),
+		)
 	default:
 		return ""
 	}
@@ -97,8 +114,57 @@ func findNamedCLI(name string) string {
 	return ""
 }
 
+// bundleLookupWindows mirrors bundleLookupUnix for Windows installers.
+// Agents there land in per-user locations (%LOCALAPPDATA%\Programs,
+// %APPDATA%\npm, ~/.opencode, ~/.bun) rather than app bundles.
+func bundleLookupWindows(name string) string {
+	home, _ := os.UserHomeDir()
+	appData := os.Getenv("APPDATA")
+	localAppData := os.Getenv("LOCALAPPDATA")
+	var candidates []string
+	switch name {
+	case "kiro":
+		candidates = append(candidates,
+			filepath.Join(localAppData, "Programs", "Kiro", "kiro.exe"),
+			filepath.Join(home, ".kiro", "bin", "kiro.exe"),
+			filepath.Join(home, ".kiro", "bin", "kiro-cli.exe"),
+		)
+	case "opencode":
+		candidates = append(candidates,
+			filepath.Join(home, ".opencode", "bin", "opencode.exe"),
+			filepath.Join(home, ".bun", "bin", "opencode.exe"),
+			filepath.Join(appData, "npm", "opencode.cmd"),
+		)
+	case "claude":
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "bin", "claude.exe"),
+			filepath.Join(appData, "npm", "claude.cmd"),
+		)
+	case "codex":
+		candidates = append(candidates,
+			filepath.Join(appData, "npm", "codex.cmd"),
+			filepath.Join(home, ".codex", "bin", "codex.exe"),
+		)
+	case "antigravity":
+		candidates = append(candidates,
+			filepath.Join(appData, "npm", "agy.cmd"),
+			filepath.Join(home, ".local", "bin", "agy.exe"),
+		)
+	case "copilot":
+		// CLI first (ACP server), then the VS Code extension bundle.
+		if cli := findCopilotCLIWindows(); cli != "" {
+			return cli
+		}
+		candidates = append(candidates,
+			filepath.Join(localAppData, "Programs", "Microsoft VS Code", "resources", "app", "extensions", "copilot", "dist", "extension.js"),
+			filepath.Join(home, ".vscode", "extensions", "github.copilot", "dist", "extension.js"),
+		)
+	}
+	return firstExisting(candidates...)
+}
+
 // findCopilotCLI scans the common npm-global binary directories for the
-// `copilot` executable.
+// `copilot` executable on Unix.
 func findCopilotCLI() string {
 	home, _ := os.UserHomeDir()
 	var dirs []string
@@ -121,10 +187,35 @@ func findCopilotCLI() string {
 	return ""
 }
 
+// findCopilotCLIWindows looks for the npm-installed Copilot CLI shim
+// under %APPDATA%\npm and per-user node dirs.
+func findCopilotCLIWindows() string {
+	home, _ := os.UserHomeDir()
+	var dirs []string
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		dirs = append(dirs, filepath.Join(appData, "npm"))
+	}
+	if home != "" {
+		dirs = append(dirs, filepath.Join(home, ".bun", "bin"))
+	}
+	for _, dir := range dirs {
+		for _, ext := range []string{".cmd", ".exe", ""} {
+			p := filepath.Join(dir, "copilot"+ext)
+			if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
 // firstExisting returns the first path that exists and is a regular
 // file; empty when none do.
 func firstExisting(paths ...string) string {
 	for _, p := range paths {
+		if p == "" {
+			continue
+		}
 		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
 			return p
 		}

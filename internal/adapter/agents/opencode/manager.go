@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -129,7 +128,7 @@ func (m *Manager) Start(ctx context.Context, workingDir string) error {
 	}
 
 	cmd := exec.CommandContext(ctx, bin, "serve", "--port", fmt.Sprint(m.port))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(cmd)
 	cmd.Dir = workingDir
 	cmd.Stdin = nil
 	cmd.Stdout = &subprocessLogWriter{logger: m.logger, source: "opencode-serve:stdout"}
@@ -190,11 +189,7 @@ func (m *Manager) terminate(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	} else {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-	}
+	terminateProcess(cmd)
 	done := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
