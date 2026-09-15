@@ -13,7 +13,8 @@ architectural decisions and trade-offs that shaped the code.
 - Strict layering: pure domain, swappable adapters, easy testing.
 - Multi-agent: one Telegram chat at a time can drive any of the bundled
   adapters (opencode HTTP, Claude/Kiro stdio JSON, GitHub Copilot
-  LSP). Each agent has its own slot in the AgentServerManager.
+  LSP, Codex `exec --json`, Antigravity `agy --output-format stream-json`).
+  Each agent has its own slot in the AgentServerManager.
 - Strict security by default: workspace-bounded, single-user, no public
   ports.
 - Small surface area: only Telegram long polling plus loopback to the
@@ -122,6 +123,19 @@ Adapters that implement the ports and depend on real-world libraries.
   JSON-RPC 2.0). Spawns the modern `copilot` CLI when present, or a
   VS Code extension bundle via `node`. SendPrompt writes the prompt as
   a synthetic text document and requests an inline completion.
+- `adapter/agents/codex`: headless transport over
+  `codex exec --json -` (new thread) and `codex exec resume <id> --json -`
+  (continue). The prompt goes through stdin, the JSONL event stream
+  (`thread.started` / `item.completed` / `turn.completed`) is parsed for
+  the reply and the real thread id. History is read from
+  `~/.codex/sessions/**/rollout-*.jsonl` (override `CODEX_SESSIONS_DIR`).
+- `adapter/agents/antigravity`: headless transport over
+  `agy -p <prompt> --output-format stream-json` (new thread) plus
+  `--conversation <id>` (continue). Parses `init` / `step_update` /
+  `result` events. History is read from the readable transcript at
+  `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl`
+  and the IDE's `~/.gemini/antigravity/...`; `history.jsonl` drives the
+  session locator.
 - `adapter/agents/detector`: PATH + bundle probing for every supported
   agent; emits the boot-time `AgentDescriptor` list the registry
   consumes.

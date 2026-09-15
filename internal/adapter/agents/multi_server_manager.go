@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/antigravity"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/claude"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/codex"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/copilot"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/kiro"
 	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
@@ -17,10 +19,12 @@ import (
 // agent's binary was not detected at boot and its slot stays
 // unavailable.
 type MultiServerManagerOptions struct {
-	OpenCode *agents_opencode.Manager
-	Claude   *claude.Manager
-	Kiro     *kiro.Manager
-	Copilot  *copilot.Manager
+	OpenCode    *agents_opencode.Manager
+	Claude      *claude.Manager
+	Kiro        *kiro.Manager
+	Copilot     *copilot.Manager
+	Codex       *codex.Manager
+	Antigravity *antigravity.Manager
 
 	// OnWorkdir, when set, is invoked with (kind, workingDir) after a
 	// successful Start so the composition root can keep auxiliary
@@ -80,6 +84,22 @@ func (m *multiServerManager) Start(ctx context.Context, kind domain.AgentKind, w
 			return err
 		}
 		m.opts.Copilot.MarkStarted(workingDir)
+	case domain.AgentCodex:
+		if m.opts.Codex == nil {
+			return domain.ErrAgentUnavailable
+		}
+		if err := validateWorkdir(workingDir); err != nil {
+			return err
+		}
+		m.opts.Codex.MarkStarted(workingDir)
+	case domain.AgentAntigravity:
+		if m.opts.Antigravity == nil {
+			return domain.ErrAgentUnavailable
+		}
+		if err := validateWorkdir(workingDir); err != nil {
+			return err
+		}
+		m.opts.Antigravity.MarkStarted(workingDir)
 	default:
 		return domain.ErrAgentUnavailable
 	}
@@ -107,6 +127,14 @@ func (m *multiServerManager) Stop(kind domain.AgentKind) {
 		if m.opts.Copilot != nil {
 			m.opts.Copilot.MarkStopped()
 		}
+	case domain.AgentCodex:
+		if m.opts.Codex != nil {
+			m.opts.Codex.MarkStopped()
+		}
+	case domain.AgentAntigravity:
+		if m.opts.Antigravity != nil {
+			m.opts.Antigravity.MarkStopped()
+		}
 	}
 }
 
@@ -115,6 +143,8 @@ func (m *multiServerManager) StopAll() {
 	m.Stop(domain.AgentClaude)
 	m.Stop(domain.AgentKiro)
 	m.Stop(domain.AgentCopilot)
+	m.Stop(domain.AgentCodex)
+	m.Stop(domain.AgentAntigravity)
 }
 
 func (m *multiServerManager) StartedSubprocess(kind domain.AgentKind) bool {
@@ -127,6 +157,10 @@ func (m *multiServerManager) StartedSubprocess(kind domain.AgentKind) bool {
 		return m.opts.Kiro != nil && m.opts.Kiro.Started()
 	case domain.AgentCopilot:
 		return m.opts.Copilot != nil && m.opts.Copilot.Started()
+	case domain.AgentCodex:
+		return m.opts.Codex != nil && m.opts.Codex.Started()
+	case domain.AgentAntigravity:
+		return m.opts.Antigravity != nil && m.opts.Antigravity.Started()
 	default:
 		return false
 	}
@@ -156,6 +190,14 @@ func (m *multiServerManager) WorkingDir(kind domain.AgentKind) string {
 	case domain.AgentCopilot:
 		if m.opts.Copilot != nil {
 			return m.opts.Copilot.WorkingDir()
+		}
+	case domain.AgentCodex:
+		if m.opts.Codex != nil {
+			return m.opts.Codex.WorkingDir()
+		}
+	case domain.AgentAntigravity:
+		if m.opts.Antigravity != nil {
+			return m.opts.Antigravity.WorkingDir()
 		}
 	}
 	return ""

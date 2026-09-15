@@ -179,7 +179,7 @@ func helpResponse() domain.BotResponse {
 		"Agentower listo.",
 		"",
 		"• /projects — selecciona la carpeta del proyecto.",
-		"• /agent — elige o cambia el agente de IA activo (opencode, Claude, Kiro, Copilot).",
+		"• /agent — elige o cambia el agente de IA activo (opencode, Claude, Kiro, Copilot, Codex, Antigravity).",
 		"• /agents — lista los agentes detectados y permite habilitarlos.",
 		"• /agents migrate — marca sesiones heredadas como opencode (compatibilidad con versiones anteriores).",
 		"• /init — rearranca el agente activo en la carpeta activa.",
@@ -590,7 +590,7 @@ func questionRender(chatID int64, pending domain.PendingQuestion, index int) dom
 		}
 	}
 	var b strings.Builder
-	b.WriteString("⏸️ El agente opencode necesita tu respuesta\n\n")
+	b.WriteString("⏸️ El agente " + string(pending.AgentKind) + " necesita tu respuesta\n\n")
 	if len(pending.Questions) > 1 {
 		fmt.Fprintf(&b, "Pregunta %d/%d\n", index+1, len(pending.Questions))
 	}
@@ -1051,7 +1051,7 @@ func (h *Handler) continuar(ctx context.Context, chatID int64, narrow string) (d
 	}
 	locators := h.locators.Locators()
 	if len(locators) == 0 {
-		return domain.BotResponse{Text: "No hay agentes con locator activo. Instalá opencode, Claude Code o GitHub Copilot."}, nil
+		return domain.BotResponse{Text: "No hay agentes con locator activo. Instalá opencode, Claude Code, GitHub Copilot, Codex o Antigravity."}, nil
 	}
 	if narrow != "" {
 		filtered := locators[:0]
@@ -1070,7 +1070,7 @@ func (h *Handler) continuar(ctx context.Context, chatID int64, narrow string) (d
 		return domain.BotResponse{}, err
 	}
 	if len(active) == 0 {
-		return domain.BotResponse{Text: "No detecté sesiones activas en tu Mac. Asegurate de tener opencode, Claude Code o GitHub Copilot ejecutándose."}, nil
+		return domain.BotResponse{Text: "No detecté sesiones activas en tu Mac. Asegurate de tener opencode, Claude Code, Kiro, GitHub Copilot, Codex o Antigravity ejecutándose."}, nil
 	}
 	sort.Slice(active, func(i, j int) bool {
 		return active[i].TouchedAt.After(active[j].TouchedAt)
@@ -1567,6 +1567,10 @@ func emojiForKind(kind domain.AgentKind) string {
 		return "🟠"
 	case domain.AgentCopilot:
 		return "🐙"
+	case domain.AgentCodex:
+		return "🧩"
+	case domain.AgentAntigravity:
+		return "🛰️"
 	default:
 		return "•"
 	}

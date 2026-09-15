@@ -67,6 +67,8 @@ compatibility; prefer `AgentAdapter` / `AgentRegistry` /
 | claude   | stdio JSON (`claude --print --output-format stream-json`) | `~/.claude/projects/<cwd>/<id>.jsonl` |
 | kiro     | ACP (`kiro-cli acp`, newline framing) | `~/.kiro/sessions/<ws>/<id>/messages.jsonl` |
 | copilot  | ACP CLI, or LSP for the VS Code bundle | VS Code `session-store.db` |
+| codex    | headless `codex exec --json -` / `codex exec resume <id> --json -` | `~/.codex/sessions/**/rollout-*.jsonl` (`CODEX_SESSIONS_DIR`) |
+| antigravity | headless `agy -p --output-format stream-json` (`--conversation <id>` to resume) | `~/.gemini/antigravity-cli/brain/<id>/.../transcript_full.jsonl` (CLI) + `~/.gemini/antigravity/...` (IDE) |
 
 Notes and gotchas:
 
@@ -77,6 +79,18 @@ Notes and gotchas:
   `session/request_permission` is auto-approved and ACP `elicitation` is
   not advertised. There is currently no interactive question flow for
   them (Claude Code disables `AskUserQuestion` in `--print` mode).
+- Codex and Antigravity are headless CLIs with no persistent server and
+  no TTY to answer permission prompts, so their managers pass
+  auto-approval flags by default (`--dangerously-bypass-approvals-and-sandbox`
+  and `--dangerously-skip-permissions` respectively). The flag sets can be
+  overridden with `AGENT_CODEX_ARGS` / `AGENT_ANTIGRAVITY_ARGS`.
+- Both new adapters map a client-side synthetic session id to the real
+  upstream id (Codex `thread_id`, Antigravity `conversation_id`) learned
+  on the first run, because neither lets the caller choose the id.
+- Codex needs a git repo unless `--skip-git-repo-check` is passed (it is,
+  by default). Antigravity's per-conversation `.db` files are opaque
+  protobuf; the adapters read the readable `transcript_full.jsonl` and
+  `history.jsonl` instead.
 - opencode's question API has changed shape/path across releases
   (`/api/question`, `/question`, `/api/question/request`). The adapter
   tries the known paths and tolerates both a `questions` array and a

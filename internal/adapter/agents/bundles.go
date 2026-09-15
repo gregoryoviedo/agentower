@@ -51,9 +51,50 @@ var bundleLookup = func(name string) string {
 			"/Applications/Visual Studio Code - Insiders.app"+bundle,
 			"/Applications/Visual Studio Code - Exploration.app"+bundle,
 		)
+	case "codex":
+		return findNamedCLI("codex")
+	case "antigravity":
+		// Newer Antigravity IDE builds ship an `agy` binary inside the
+		// app bundle; the standalone CLI installer drops it in
+		// ~/.local/bin (already covered by findNamedCLI). Probe both.
+		if cli := findNamedCLI("agy"); cli != "" {
+			return cli
+		}
+		return firstExisting(
+			"/Applications/Antigravity.app/Contents/Resources/app/bin/agy",
+			"/Applications/Antigravity.app/Contents/MacOS/agy",
+			"/Applications/Antigravity IDE.app/Contents/Resources/app/bin/agy",
+		)
 	default:
 		return ""
 	}
+}
+
+// findNamedCLI scans the common user/npm/Homebrew binary directories
+// for a bare executable name. Used by codex and antigravity, whose
+// installers do not always place the binary on the GUI PATH.
+func findNamedCLI(name string) string {
+	home, _ := os.UserHomeDir()
+	var dirs []string
+	if home != "" {
+		dirs = append(dirs,
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, ".npm-global", "bin"),
+			filepath.Join(home, "bin"),
+			filepath.Join(home, ".codex", "bin"),
+		)
+		if matches, _ := filepath.Glob(filepath.Join(home, ".nvm", "versions", "node", "*", "bin")); len(matches) > 0 {
+			dirs = append(dirs, matches...)
+		}
+	}
+	dirs = append(dirs, "/opt/homebrew/bin", "/usr/local/bin")
+	for _, dir := range dirs {
+		p := filepath.Join(dir, name)
+		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+			return p
+		}
+	}
+	return ""
 }
 
 // findCopilotCLI scans the common npm-global binary directories for the

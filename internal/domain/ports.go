@@ -32,17 +32,19 @@ type NavigationRepository interface {
 type AgentKind string
 
 const (
-	AgentOpenCode AgentKind = "opencode"
-	AgentClaude   AgentKind = "claude"
-	AgentKiro     AgentKind = "kiro"
-	AgentCopilot  AgentKind = "copilot"
+	AgentOpenCode    AgentKind = "opencode"
+	AgentClaude      AgentKind = "claude"
+	AgentKiro        AgentKind = "kiro"
+	AgentCopilot     AgentKind = "copilot"
+	AgentCodex       AgentKind = "codex"
+	AgentAntigravity AgentKind = "antigravity"
 )
 
 // AllAgentKinds returns the supported agent kinds in the order they
 // appear in the Telegram picker. Stable order keeps the picker layout
 // deterministic between renders.
 func AllAgentKinds() []AgentKind {
-	return []AgentKind{AgentOpenCode, AgentClaude, AgentKiro, AgentCopilot}
+	return []AgentKind{AgentOpenCode, AgentClaude, AgentKiro, AgentCopilot, AgentCodex, AgentAntigravity}
 }
 
 // AgentCapabilities describes which features an adapter currently

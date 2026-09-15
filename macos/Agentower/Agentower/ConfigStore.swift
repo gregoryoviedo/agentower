@@ -64,27 +64,31 @@ final class ConfigStore {
 
     /// The set of agent kinds the wrapper knows about, in display order.
     /// Matches internal/adapter/agents.AllAgentKinds.
-    static let agentKinds: [String] = ["opencode", "claude", "kiro", "copilot"]
+    static let agentKinds: [String] = ["opencode", "claude", "kiro", "copilot", "codex", "antigravity"]
 
     /// Default port per agent. Matches the detector defaults.
     static func defaultPort(for kind: String) -> Int {
         switch kind {
-        case "opencode": return 4096
-        case "claude":   return 4097
-        case "kiro":     return 4099
-        case "copilot":  return 4100
-        default:         return 4096
+        case "opencode":    return 4096
+        case "claude":      return 4097
+        case "kiro":        return 4099
+        case "copilot":     return 4100
+        case "codex":       return 4101
+        case "antigravity": return 4102
+        default:            return 4096
         }
     }
 
     /// Display name per agent. Matches the detector DisplayName strings.
     static func displayName(for kind: String) -> String {
         switch kind {
-        case "opencode": return "opencode"
-        case "claude":   return "Claude"
-        case "kiro":     return "Kiro"
-        case "copilot":  return "GitHub Copilot"
-        default:         return kind
+        case "opencode":    return "opencode"
+        case "claude":      return "Claude"
+        case "kiro":        return "Kiro"
+        case "copilot":     return "GitHub Copilot"
+        case "codex":       return "Codex"
+        case "antigravity": return "Antigravity"
+        default:            return kind
         }
     }
 
@@ -134,10 +138,12 @@ final class ConfigStore {
     static func detectAgentsInPath() -> [String: String] {
         var found: [String: String] = [:]
         let pathCandidates: [(String, [String])] = [
-            ("opencode", ["opencode"]),
-            ("claude",   ["claude"]),
-            ("kiro",     ["kiro"]),
-            ("copilot",  ["copilot", "copilot-language-server"]),
+            ("opencode",    ["opencode"]),
+            ("claude",      ["claude"]),
+            ("kiro",        ["kiro"]),
+            ("copilot",     ["copilot", "copilot-language-server"]),
+            ("codex",       ["codex"]),
+            ("antigravity", ["agy"]),
         ]
         for (kind, binaries) in pathCandidates {
             for binary in binaries {
@@ -166,6 +172,15 @@ final class ConfigStore {
         }
         if found["copilot"] == nil, let bundle = findVSCodeCopilotBundle() {
             found["copilot"] = bundle
+        }
+        // Antigravity's `agy` may also ship inside the IDE app bundle.
+        for path in [
+            "/Applications/Antigravity.app/Contents/Resources/app/bin/agy",
+            "/Applications/Antigravity.app/Contents/MacOS/agy",
+            "/Applications/Antigravity IDE.app/Contents/Resources/app/bin/agy",
+            home + "/Applications/Antigravity.app/Contents/Resources/app/bin/agy",
+        ] where found["antigravity"] == nil && FileManager.default.fileExists(atPath: path) {
+            found["antigravity"] = path
         }
         return found
     }

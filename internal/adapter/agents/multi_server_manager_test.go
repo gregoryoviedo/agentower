@@ -5,7 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/antigravity"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/claude"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/codex"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/copilot"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/kiro"
 	"github.com/gregoryoviedo/agentower/internal/domain"
@@ -37,16 +39,18 @@ func TestMultiServerManagerStartsStdioAgents(t *testing.T) {
 	var hookKinds []domain.AgentKind
 	var hookDirs []string
 	sm := NewMultiServerManager(MultiServerManagerOptions{
-		Claude:  claude.NewManager("claude", 4097),
-		Kiro:    kiro.NewManager("kiro", 4099),
-		Copilot: copilot.NewManager(copilot.LaunchConfig{}),
+		Claude:      claude.NewManager("claude", 4097),
+		Kiro:        kiro.NewManager("kiro", 4099),
+		Copilot:     copilot.NewManager(copilot.LaunchConfig{}),
+		Codex:       codex.NewManager("codex", 4101),
+		Antigravity: antigravity.NewManager("agy", 4102),
 		OnWorkdir: func(kind domain.AgentKind, workdir string) {
 			hookKinds = append(hookKinds, kind)
 			hookDirs = append(hookDirs, workdir)
 		},
 	})
 
-	for _, kind := range []domain.AgentKind{domain.AgentClaude, domain.AgentKiro, domain.AgentCopilot} {
+	for _, kind := range []domain.AgentKind{domain.AgentClaude, domain.AgentKiro, domain.AgentCopilot, domain.AgentCodex, domain.AgentAntigravity} {
 		if err := sm.Start(context.Background(), kind, dir); err != nil {
 			t.Fatalf("Start(%s) = %v", kind, err)
 		}
@@ -60,10 +64,10 @@ func TestMultiServerManagerStartsStdioAgents(t *testing.T) {
 			t.Errorf("WorkingDir(%s) = %q, want %q", kind, got, dir)
 		}
 	}
-	if len(hookKinds) != 3 {
-		t.Fatalf("OnWorkdir fired %d times, want 3", len(hookKinds))
+	if len(hookKinds) != 5 {
+		t.Fatalf("OnWorkdir fired %d times, want 5", len(hookKinds))
 	}
-	for i, kind := range []domain.AgentKind{domain.AgentClaude, domain.AgentKiro, domain.AgentCopilot} {
+	for i, kind := range []domain.AgentKind{domain.AgentClaude, domain.AgentKiro, domain.AgentCopilot, domain.AgentCodex, domain.AgentAntigravity} {
 		if hookKinds[i] != kind {
 			t.Errorf("OnWorkdir kind[%d] = %s, want %s", i, hookKinds[i], kind)
 		}

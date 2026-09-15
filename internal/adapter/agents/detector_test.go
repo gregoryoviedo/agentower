@@ -13,7 +13,7 @@ func TestDetectorReturnsOneDescriptorPerKind(t *testing.T) {
 	d := agents.NewDetector()
 	d.LookPath = func(name string) (string, error) {
 		switch name {
-		case "opencode", "claude", "kiro", "copilot":
+		case "opencode", "claude", "kiro", "copilot", "codex", "agy":
 			return "/usr/local/bin/" + name, nil
 		default:
 			return "", errors.New("not found")
@@ -25,13 +25,14 @@ func TestDetectorReturnsOneDescriptorPerKind(t *testing.T) {
 	}
 	for _, desc := range got {
 		switch desc.Kind {
-		case domain.AgentOpenCode, domain.AgentClaude, domain.AgentKiro, domain.AgentCopilot:
+		case domain.AgentOpenCode, domain.AgentClaude, domain.AgentKiro, domain.AgentCopilot,
+			domain.AgentCodex, domain.AgentAntigravity:
 			if !desc.Available {
 				t.Errorf("%s should be Available when binary is present", desc.Kind)
 			}
 		default:
 			if desc.Available {
-				t.Errorf("%s should be Available=false until its adapter lands", desc.Kind)
+				t.Errorf("%s should be Available=false for an unknown kind", desc.Kind)
 			}
 			if (desc.Bin != "") != desc.Detected {
 				t.Errorf("%s Detected mismatch: Bin=%q Detected=%v", desc.Kind, desc.Bin, desc.Detected)

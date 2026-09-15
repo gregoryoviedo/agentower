@@ -6,7 +6,8 @@ deliberately does not do, and where it is going next.
 ## Vision
 
 Agentower turns Telegram into a thin remote control for one of several
-local AI agents — opencode, Claude Code, Kiro, GitHub Copilot.
+local AI agents — opencode, Claude Code, Kiro, GitHub Copilot, Codex,
+Antigravity.
 The bot is the only surface you interact with on your phone; whichever
 agent is active keeps doing the work locally on your Mac.
 

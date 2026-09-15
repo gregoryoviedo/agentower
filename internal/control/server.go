@@ -397,7 +397,7 @@ func buildQuestionResponse(chatID int64, question domain.PendingQuestion, index 
 	}
 	prompt := question.Questions[index]
 	var b strings.Builder
-	b.WriteString("⏸️ El agente opencode necesita tu respuesta\n\n")
+	b.WriteString("⏸️ El agente " + string(question.AgentKind) + " necesita tu respuesta\n\n")
 	if len(question.Questions) > 1 {
 		fmt.Fprintf(&b, "Pregunta %d/%d\n", index+1, len(question.Questions))
 	}

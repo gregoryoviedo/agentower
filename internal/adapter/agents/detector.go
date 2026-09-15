@@ -15,10 +15,12 @@ import (
 // supplied. Stable across runs so the user only has to remember one
 // number per agent.
 const (
-	DefaultOpenCodePort = 4096
-	DefaultClaudePort   = 4097
-	DefaultKiroPort     = 4099
-	DefaultCopilotPort  = 4100
+	DefaultOpenCodePort    = 4096
+	DefaultClaudePort      = 4097
+	DefaultKiroPort        = 4099
+	DefaultCopilotPort     = 4100
+	DefaultCodexPort       = 4101
+	DefaultAntigravityPort = 4102
 )
 
 // Detector probes the local environment for every known agent and
@@ -41,9 +43,9 @@ func NewDetector() *Detector {
 // Scan walks the supported agent kinds in stable order and returns one
 // descriptor per kind. The Available flag is true only when (a) the
 // binary is in PATH (or the configured bundle path) AND (b) the
-// adapter has shipped. Today only opencode has shipped adapters; the
-// others are surfaced as Detected=true Available=false Reason="Próximamente"
-// so the Settings UI and Telegram picker can render them.
+// adapter has shipped. Every supported kind has an adapter today, so
+// Available mirrors Detected; the Reason field explains the miss when
+// the binary is absent.
 func (d *Detector) Scan(ctx context.Context) []domain.AgentDescriptor {
 	kinds := domain.AllAgentKinds()
 	out := make([]domain.AgentDescriptor, 0, len(kinds))
@@ -64,6 +66,10 @@ func (d *Detector) scanOne(ctx context.Context, kind domain.AgentKind) domain.Ag
 	case domain.AgentCopilot:
 		// Copilot ships an LSP over stdio; no HTTP probe needed.
 		return d.scanCopilot()
+	case domain.AgentCodex:
+		return d.scanCodex()
+	case domain.AgentAntigravity:
+		return d.scanAntigravity()
 	default:
 		return domain.AgentDescriptor{
 			Kind:        kind,
@@ -193,6 +199,78 @@ func copilotCapabilities() domain.AgentCapabilities {
 		Revert:        false,
 		FileStatus:    true, // falls back to `git diff`
 		ListMessages:  true, // reads VS Code session-store.db
+	}
+}
+
+// scanCodex probes for OpenAI's Codex CLI. There is no HTTP server:
+// the adapter drives `codex exec --json` over stdio, so Running stays
+// false and a port is reserved only for parity with the other agents.
+func (d *Detector) scanCodex() domain.AgentDescriptor {
+	bin, _ := d.LookPath("codex")
+	if bin == "" && d.ExtraBins != nil {
+		bin = d.ExtraBins("codex")
+	}
+	desc := domain.AgentDescriptor{
+		Kind:         domain.AgentCodex,
+		DisplayName:  "Codex",
+		Bin:          bin,
+		Port:         DefaultCodexPort,
+		Detected:     bin != "",
+		Available:    bin != "",
+		Capabilities: codexCapabilities(),
+	}
+	if bin == "" {
+		desc.Reason = "no se encontró el binario codex en PATH"
+	}
+	return desc
+}
+
+// scanAntigravity probes for Google's Antigravity CLI (`agy`). It is a
+// stdio-only headless transport; the IDE is watched through the shared
+// ~/.gemini state root by the locator.
+func (d *Detector) scanAntigravity() domain.AgentDescriptor {
+	bin, _ := d.LookPath("agy")
+	if bin == "" && d.ExtraBins != nil {
+		bin = d.ExtraBins("antigravity")
+	}
+	desc := domain.AgentDescriptor{
+		Kind:         domain.AgentAntigravity,
+		DisplayName:  "Antigravity",
+		Bin:          bin,
+		Port:         DefaultAntigravityPort,
+		Detected:     bin != "",
+		Available:    bin != "",
+		Capabilities: antigravityCapabilities(),
+	}
+	if bin == "" {
+		desc.Reason = "no se encontró el binario agy (Antigravity CLI) en PATH"
+	}
+	return desc
+}
+
+func codexCapabilities() domain.AgentCapabilities {
+	return domain.AgentCapabilities{
+		Health:        true,
+		ListProjects:  false,
+		ListSessions:  true, // reads ~/.codex/sessions/**/rollout-*.jsonl
+		CreateSession: true,
+		SendPrompt:    true,
+		Revert:        false,
+		FileStatus:    true, // falls back to `git diff`
+		ListMessages:  true, // reads the rollout JSONL
+	}
+}
+
+func antigravityCapabilities() domain.AgentCapabilities {
+	return domain.AgentCapabilities{
+		Health:        true,
+		ListProjects:  false,
+		ListSessions:  true, // reads ~/.gemini/antigravity*/brain + history.jsonl
+		CreateSession: true,
+		SendPrompt:    true,
+		Revert:        false,
+		FileStatus:    true, // falls back to `git diff`
+		ListMessages:  true, // reads transcript_full.jsonl
 	}
 }
 

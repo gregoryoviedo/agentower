@@ -14,7 +14,9 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/antigravity"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/claude"
+	"github.com/gregoryoviedo/agentower/internal/adapter/agents/codex"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/copilot"
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/kiro"
 	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
@@ -94,6 +96,10 @@ func main() {
 	kiroManager := kiro.NewManager(kiroBin(descriptors), agents.DefaultKiroPort)
 	copilotDescriptor := findCopilotDescriptor(descriptors)
 	copilotManager := copilot.NewManager(copilotLaunchConfig(copilotDescriptor))
+	codexDescriptor := findDescriptor(descriptors, domain.AgentCodex)
+	codexManager := codex.NewManager(codexBin(descriptors), agents.DefaultCodexPort, splitAgentArgs(os.Getenv("AGENT_CODEX_ARGS"))...)
+	antigravityDescriptor := findDescriptor(descriptors, domain.AgentAntigravity)
+	antigravityManager := antigravity.NewManager(antigravityBin(descriptors), agents.DefaultAntigravityPort, splitAgentArgs(os.Getenv("AGENT_ANTIGRAVITY_ARGS"))...)
 
 	registry := agents.NewRegistry(agents.RegistryOptions{
 		Descriptors: descriptors,
@@ -124,6 +130,20 @@ func main() {
 			return adapter, nil
 		})
 	}
+	if codexDescriptor.Available {
+		registry.Register(domain.AgentCodex, func() (domain.AgentAdapter, error) {
+			adapter := codex.NewAdapter(codexManager)
+			adapter.SetStateDir(cfg.CodexStateDir)
+			return adapter, nil
+		})
+	}
+	if antigravityDescriptor.Available {
+		registry.Register(domain.AgentAntigravity, func() (domain.AgentAdapter, error) {
+			adapter := antigravity.NewAdapter(antigravityManager)
+			adapter.SetStateDir(cfg.AntigravityStateDir)
+			return adapter, nil
+		})
+	}
 	if !opencodeDescriptor.Available {
 		// If opencode is missing we still expose the descriptor so the
 		// UI can show the Próximamente card, but the registry's
@@ -140,6 +160,7 @@ func main() {
 	var claudeLoc *claude.SessionLocator
 	var kiroLoc *kiro.SessionLocator
 	var copilotLoc *copilot.SessionLocator
+	var antigravityLoc *antigravity.SessionLocator
 	if opencodeDescriptor.Available {
 		locators.Add(agents_opencode.NewSessionLocator(opencodeClient))
 	}
@@ -177,6 +198,23 @@ func main() {
 			logger.Warn("build copilot locator", "error", err)
 		}
 	}
+	if codexDescriptor.Available {
+		loc, err := codex.NewSessionLocator(codex.SessionLocatorOptions{StateDir: cfg.CodexStateDir})
+		if err == nil {
+			locators.Add(loc)
+		} else {
+			logger.Warn("build codex locator", "error", err)
+		}
+	}
+	if antigravityDescriptor.Available {
+		loc, err := antigravity.NewSessionLocator(antigravity.SessionLocatorOptions{StateDir: cfg.AntigravityStateDir})
+		if err == nil {
+			antigravityLoc = loc
+			locators.Add(loc)
+		} else {
+			logger.Warn("build antigravity locator", "error", err)
+		}
+	}
 
 	// One manager per detected agent. Undetected slots stay nil so the
 	// server manager reports them unavailable, matching the registry.
@@ -196,6 +234,12 @@ func main() {
 	}
 	if copilotDescriptor.Bin != "" {
 		serverOpts.Copilot = copilotManager
+	}
+	if codexDescriptor.Available {
+		serverOpts.Codex = codexManager
+	}
+	if antigravityDescriptor.Available {
+		serverOpts.Antigravity = antigravityManager
 	}
 	serverManager := agents.NewMultiServerManager(serverOpts)
 
@@ -243,6 +287,17 @@ func main() {
 		kiroIDE.WatchIDE(cfg.AllowedChatID, domain.AgentKiro, kiroLoc)
 		go func() {
 			kiroIDE.Run(stopContext)
+		}()
+	}
+	// The Antigravity IDE shares the ~/.gemini state root with the CLI,
+	// so a task finished in the editor is detected and notified without
+	// the user touching Telegram.
+	if antigravityLoc != nil {
+		antigravityIDE := usecase.NewSessionWatcher(registry, repository, repository, publisher, watcherOpts)
+		antigravityIDE.SetRequestNotifier(publisher.RequestNotification)
+		antigravityIDE.WatchIDE(cfg.AllowedChatID, domain.AgentAntigravity, antigravityLoc)
+		go func() {
+			antigravityIDE.Run(stopContext)
 		}()
 	}
 
@@ -402,4 +457,43 @@ func kiroBin(descriptors []domain.AgentDescriptor) string {
 		}
 	}
 	return "kiro"
+}
+
+// findDescriptor returns the descriptor for a kind, or a zero-valued one
+// carrying only the kind when the detector did not emit it.
+func findDescriptor(descriptors []domain.AgentDescriptor, kind domain.AgentKind) domain.AgentDescriptor {
+	for _, d := range descriptors {
+		if d.Kind == kind {
+			return d
+		}
+	}
+	return domain.AgentDescriptor{Kind: kind}
+}
+
+// codexBin returns the Codex CLI binary the manager should spawn,
+// falling back to the bare name for PATH resolution at spawn time.
+func codexBin(descriptors []domain.AgentDescriptor) string {
+	if d := findDescriptor(descriptors, domain.AgentCodex); d.Bin != "" {
+		return d.Bin
+	}
+	return "codex"
+}
+
+// antigravityBin returns the `agy` binary the Antigravity manager should
+// spawn, falling back to the bare name for PATH resolution.
+func antigravityBin(descriptors []domain.AgentDescriptor) string {
+	if d := findDescriptor(descriptors, domain.AgentAntigravity); d.Bin != "" {
+		return d.Bin
+	}
+	return "agy"
+}
+
+// splitAgentArgs parses the AGENT_<KIND>_ARGS env var into an argv
+// slice. Empty input yields nil so the manager keeps its defaults.
+func splitAgentArgs(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	return strings.Fields(raw)
 }

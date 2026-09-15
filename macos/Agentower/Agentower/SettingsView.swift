@@ -226,9 +226,11 @@ struct SettingsView: View {
         }
         let hint: String
         switch row.kind {
-        case "copilot": hint = "instala la extensión GitHub Copilot en VS Code o añade `copilot` a PATH"
-        case "opencode": hint = "instala opencode CLI y asegúrate de que esté en PATH"
-        default:        hint = "instala \(ConfigStore.displayName(for: row.kind)) y asegúrate de que esté en PATH"
+        case "copilot":     hint = "instala la extensión GitHub Copilot en VS Code o añade `copilot` a PATH"
+        case "opencode":    hint = "instala opencode CLI y asegúrate de que esté en PATH"
+        case "codex":       hint = "instala Codex CLI (`npm i -g @openai/codex`) y asegúrate de que `codex` esté en PATH"
+        case "antigravity": hint = "instala Antigravity CLI (`curl -fsSL https://antigravity.google/cli/install.sh | bash`) y asegúrate de que `agy` esté en PATH"
+        default:            hint = "instala \(ConfigStore.displayName(for: row.kind)) y asegúrate de que esté en PATH"
         }
         return "No se encontró el binario — \(hint)"
     }

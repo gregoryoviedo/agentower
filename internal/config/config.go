@@ -24,6 +24,11 @@ type Config struct {
 	CopilotStateDir string
 	ClaudeStateDir  string
 	KiroStateDir    string
+	CodexStateDir   string
+	// AntigravityStateDir points at the shared ~/.gemini root; the
+	// adapter derives the `antigravity-cli` (CLI) and `antigravity`
+	// (IDE) subdirectories from it.
+	AntigravityStateDir string
 }
 
 func Load() (*Config, error) {
@@ -69,6 +74,8 @@ func Load() (*Config, error) {
 	cfg.CopilotStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_COPILOT_STATE_DIR"))
 	cfg.ClaudeStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_CLAUDE_STATE_DIR"))
 	cfg.KiroStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_KIRO_STATE_DIR"))
+	cfg.CodexStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_CODEX_STATE_DIR"))
+	cfg.AntigravityStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_ANTIGRAVITY_STATE_DIR"))
 
 	return cfg, nil
 }

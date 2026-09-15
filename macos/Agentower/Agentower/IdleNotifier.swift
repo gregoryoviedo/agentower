@@ -280,7 +280,7 @@ final class IdleNotifier {
     private func showQuestionLocalNotification() {
         let content = UNMutableNotificationContent()
         content.title = "El agente necesita tu respuesta"
-        content.body = "opencode hizo una pregunta y está esperando. Responde desde Telegram."
+        content.body = "El agente hizo una pregunta y está esperando. Responde desde Telegram."
         content.sound = .default
         let request = UNNotificationRequest(
             identifier: "agentower.question.\(lastQuestionRequestID ?? UUID().uuidString)",
