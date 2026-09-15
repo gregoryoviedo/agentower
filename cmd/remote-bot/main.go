@@ -60,7 +60,18 @@ func main() {
 	stopContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// GUI/launchd launches start with a minimal PATH that omits the
+	// user's shell additions (e.g. ~/.local/bin where Claude Code's
+	// native installer drops the `claude` binary). Augment PATH so the
+	// detector finds every agent and the subprocess managers can spawn
+	// them by bare name.
+	ensureUserBinPath()
+
 	detector := agents.NewDetector()
+	// GUI/launchd launches also miss agents installed inside app
+	// bundles (Kiro CLI, Copilot built into VS Code), so consult them
+	// when PATH has no answer.
+	detector.ExtraBins = agents.BundleBinLookup
 	descriptors := detector.Scan(stopContext)
 	opencodeDescriptor := descriptors[0]
 	for _, d := range descriptors {
@@ -80,7 +91,7 @@ func main() {
 		Logger: logger.With("component", "opencode-server"),
 	})
 	claudeManager := claude.NewManager("claude", agents.DefaultClaudePort)
-	kiroManager := kiro.NewManager("kiro", agents.DefaultKiroPort)
+	kiroManager := kiro.NewManager(kiroBin(descriptors), agents.DefaultKiroPort)
 	copilotDescriptor := findCopilotDescriptor(descriptors)
 	copilotManager := copilot.NewManager(copilotLaunchConfig(copilotDescriptor))
 
@@ -115,30 +126,27 @@ func main() {
 		// Available() returns false. The boot log makes this loud.
 		logger.Warn("opencode binary not found in PATH", "expected_bin", "opencode")
 	}
-	serverManager := agents.NewOpenCodeServerManager(opencodeManager)
-	_ = claudeManager  // kept alive for the lifetime of the bot; sessions spawn on first use
-	_ = kiroManager    // same
-	_ = copilotManager // same: lazily dials the LSP server on first use
-
-	logger.Info("opencode autostart disabled; send /init from Telegram to bring the server up",
-		"port", agents.DefaultOpenCodePort)
-	defer serverManager.StopAll()
-
 	navigation := usecase.NewNavigationService(browser, repository)
 	publisher := control.NewPublisher()
 	locators := usecase.NewActiveLocatorRegistry()
+
+	// The Claude locator needs a workdir at build time; the manager's
+	// workdir is empty until the first Start, so seed it with the
+	// workspace root and let the server manager keep it in sync below.
+	var claudeLoc *claude.SessionLocator
 	if opencodeDescriptor.Available {
 		locators.Add(agents_opencode.NewSessionLocator(opencodeClient))
 	}
 	if hasDetectedClaude(descriptors) {
-		claudeLoc, err := claude.NewSessionLocator(claude.SessionLocatorOptions{
-			Workdir:  claudeManager.WorkingDir(),
+		loc, err := claude.NewSessionLocator(claude.SessionLocatorOptions{
+			Workdir:  cfg.WorkspaceRoot,
 			StateDir: cfg.ClaudeStateDir,
 		})
-		if err == nil {
-			locators.Add(claudeLoc)
-		} else {
+		if err != nil {
 			logger.Warn("build claude locator", "error", err)
+		} else {
+			claudeLoc = loc
+			locators.Add(loc)
 		}
 	}
 	if hasDetectedKiro(descriptors) {
@@ -161,6 +169,31 @@ func main() {
 			logger.Warn("build copilot locator", "error", err)
 		}
 	}
+
+	// One manager per detected agent. Undetected slots stay nil so the
+	// server manager reports them unavailable, matching the registry.
+	serverOpts := agents.MultiServerManagerOptions{
+		OpenCode: opencodeManager,
+		OnWorkdir: func(kind domain.AgentKind, workdir string) {
+			if kind == domain.AgentClaude && claudeLoc != nil {
+				claudeLoc.SetWorkdir(workdir)
+			}
+		},
+	}
+	if hasDetectedClaude(descriptors) {
+		serverOpts.Claude = claudeManager
+	}
+	if hasDetectedKiro(descriptors) {
+		serverOpts.Kiro = kiroManager
+	}
+	if copilotDescriptor.Bin != "" {
+		serverOpts.Copilot = copilotManager
+	}
+	serverManager := agents.NewMultiServerManager(serverOpts)
+
+	logger.Info("opencode autostart disabled; send /init from Telegram to bring the server up",
+		"port", agents.DefaultOpenCodePort)
+	defer serverManager.StopAll()
 
 	handler := usecase.NewHandler(navigation, repository, registry, serverManager, browser)
 	handler.SetSessionEventLog(repository)
@@ -222,6 +255,34 @@ func main() {
 		"available_agents", registry.Available(),
 	)
 	bot.Start()
+}
+
+// ensureUserBinPath appends the user-local binary directories to PATH
+// when they are missing. Launchd-launched processes (the macOS wrapper
+// spawns remote-bot from the GUI app) inherit a minimal PATH that does
+// not include the user's shell additions, so binaries like Claude Code
+// installed in ~/.local/bin would otherwise be invisible to
+// exec.LookPath. Idempotent: existing entries are left untouched.
+func ensureUserBinPath() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	dirs := []string{
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".bin"),
+		filepath.Join(home, "bin"),
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+	}
+	path := os.Getenv("PATH")
+	for _, dir := range dirs {
+		if dir == "" || strings.Contains(path, dir) {
+			continue
+		}
+		path = path + string(os.PathListSeparator) + dir
+	}
+	_ = os.Setenv("PATH", path)
 }
 
 // hasDetectedClaude returns true when the detector marked the Claude
@@ -290,4 +351,17 @@ func opencodeBin(descriptors []domain.AgentDescriptor, opencode domain.AgentDesc
 		}
 	}
 	return "opencode"
+}
+
+// kiroBin returns the Kiro CLI binary the kiro manager should spawn.
+// Prefers the absolute path the detector found (PATH or the Kiro CLI
+// app bundle) and falls back to the bare "kiro" name for PATH
+// resolution at spawn time.
+func kiroBin(descriptors []domain.AgentDescriptor) string {
+	for _, d := range descriptors {
+		if d.Kind == domain.AgentKiro && d.Bin != "" {
+			return d.Bin
+		}
+	}
+	return "kiro"
 }

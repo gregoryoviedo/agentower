@@ -26,6 +26,11 @@ const (
 type Detector struct {
 	// LookPath is overridable so tests can stub the PATH lookup.
 	LookPath func(string) (string, error)
+	// ExtraBins is consulted after LookPath (and the built-in bundle
+	// scans) fail, for binaries installed outside PATH — e.g. Kiro's
+	// CLI inside /Applications/Kiro CLI.app or Copilot built into the
+	// VS Code app bundle. Leave nil to keep detection hermetic (tests).
+	ExtraBins func(name string) string
 }
 
 // NewDetector builds a detector that uses exec.LookPath under the hood.
@@ -115,6 +120,9 @@ func (d *Detector) scanClaude(ctx context.Context) domain.AgentDescriptor {
 
 func (d *Detector) scanKiro(ctx context.Context) domain.AgentDescriptor {
 	bin, _ := d.LookPath("kiro")
+	if bin == "" && d.ExtraBins != nil {
+		bin = d.ExtraBins("kiro")
+	}
 	desc := domain.AgentDescriptor{
 		Kind:        domain.AgentKiro,
 		DisplayName: "Kiro",
@@ -151,6 +159,9 @@ func (d *Detector) scanCopilot() domain.AgentDescriptor {
 		if match, ok := findVSCodeCopilotBundle(); ok {
 			bin = match
 		}
+	}
+	if bin == "" && d.ExtraBins != nil {
+		bin = d.ExtraBins("copilot")
 	}
 	desc := domain.AgentDescriptor{
 		Kind:         domain.AgentCopilot,

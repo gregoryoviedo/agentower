@@ -147,6 +147,23 @@ final class ConfigStore {
                 }
             }
         }
+        // GUI/launchd launches start with a minimal PATH, so also probe
+        // the app bundles these agents ship inside.
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        for path in [
+            "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli",
+            home + "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli",
+            "/Applications/Kiro.app/Contents/MacOS/kiro",
+            home + "/Applications/Kiro.app/Contents/MacOS/kiro",
+        ] where found["kiro"] == nil && FileManager.default.fileExists(atPath: path) {
+            found["kiro"] = path
+        }
+        for path in [
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/extensions/copilot/dist/extension.js",
+            "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/extensions/copilot/dist/extension.js",
+        ] where found["copilot"] == nil && FileManager.default.fileExists(atPath: path) {
+            found["copilot"] = path
+        }
         if found["copilot"] == nil, let bundle = findVSCodeCopilotBundle() {
             found["copilot"] = bundle
         }
@@ -157,6 +174,11 @@ final class ConfigStore {
         let task = Process()
         task.launchPath = "/usr/bin/which"
         task.arguments = [binary]
+        // GUI/launchd launches start with a minimal PATH that omits the
+        // user's shell additions (e.g. ~/.local/bin where Claude Code's
+        // native installer drops `claude`). Augment PATH so detection
+        // matches what the terminal sees.
+        task.environment = augmentedPathEnvironment()
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = Pipe()
@@ -172,6 +194,28 @@ final class ConfigStore {
         } catch {
             return nil
         }
+    }
+
+    /// Returns the current environment with the user-local binary
+    /// directories appended to PATH when missing.
+    private static func augmentedPathEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let extras = [
+            home + "/.local/bin",
+            home + "/.bin",
+            home + "/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+        var parts = (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+            .split(separator: ":")
+            .map(String.init)
+        for dir in extras where !parts.contains(dir) {
+            parts.append(dir)
+        }
+        env["PATH"] = parts.joined(separator: ":")
+        return env
     }
 
     /// Mirrors Go's findVSCodeCopilotBundle: scans the user's VS Code
