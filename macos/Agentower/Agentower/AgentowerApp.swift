@@ -28,6 +28,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController = StatusBarController(appState: appState, botController: botController)
         idleNotifier = IdleNotifier()
         idleNotifier.start()
+
+        autoStartBotIfConfigured()
+    }
+
+    private func autoStartBotIfConfigured() {
+        let cfg = appState.configuration
+        guard cfg.isValid else { return }
+        botController.start(
+            telegramAPIRoot: cfg.telegramAPIRoot,
+            telegramProxyURL: cfg.telegramProxyURL
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {

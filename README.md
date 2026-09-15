@@ -306,6 +306,9 @@ La app llama `SMAppService.mainApp.register()` y aparece en *Ajustes del
 sistema → General → Ítems de inicio*. Solo funciona si la app vive en
 `/Applications/` o `~/Applications/`.
 
+Al abrir la app (incluido el arranque al login), si la configuración es
+válida el bot arranca solo; no hace falta pulsar Iniciar.
+
 ### Cómo funciona el toggle
 
 - **Apagado → click**: arranca `Resources/remote-bot` con env vars
