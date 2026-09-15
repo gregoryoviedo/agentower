@@ -10,6 +10,12 @@ macos/Agentower/Agentower/Resources/remote-bot
 dist/
 *.dSYM/
 
+# Windows tray app
+windows/Agentower/bin/
+windows/Agentower/obj/
+windows/Agentower/Resources/remote-bot.exe
+windows/**/selftest.log
+
 # State and logs
 .agentower/
 .agentower.pid

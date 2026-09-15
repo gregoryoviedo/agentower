@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>Agentower</AssemblyName>
+    <RootNamespace>Agentower</RootNamespace>
+    <Product>Agentower</Product>
+    <Version>0.1.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Resources\agentower.ico</ApplicationIcon>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\remote-bot.exe" Condition="Exists('Resources\remote-bot.exe')" LogicalName="Agentower.Resources.remote-bot.exe" />
+    <EmbeddedResource Include="Resources\agentower.ico" LogicalName="Agentower.Resources.agentower.ico" />
+    <EmbeddedResource Include="Resources\menubar-icon.png" LogicalName="Agentower.Resources.menubar-icon.png" />
+  </ItemGroup>
+
+</Project>
