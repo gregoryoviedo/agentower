@@ -20,11 +20,11 @@ lo hace en macOS.
     `TELEGRAM_PROXY_URL`.
   - **Inicio** — iniciar Agentower al arrancar Windows.
 - **Notificación al terminar una tarea** — si el usuario no ha tocado el
-  teclado/ratón en 5 minutos y el agente terminó, el bot envía el
+  teclado/ratón en 2 minutos y el agente terminó, el bot envía el
   mensaje a Telegram y aparece una notificación de Windows.
 - **Preguntas respondibles desde Telegram** — si el agente se detiene a
-  pedir una decisión con opciones, el wrapper reenvía la pregunta a los
-  3 minutos de inactividad; se responde con botones o texto desde
+  pedir una decisión con opciones, el wrapper reenvía la pregunta al
+  minuto de inactividad; se responde con botones o texto desde
   Telegram.
 - **Arranque automático** — al iniciar Windows, `Agentower.exe` se lanza
   solo (clave `Run` del usuario) y **arranca el bot inmediatamente** si la

@@ -75,7 +75,7 @@ The wrapper is the convenient launcher on both platforms:
   the watcher suppresses the completion snapshot and routes the question
   through the bot. The user answers with inline buttons or free text and
   the answer is posted back to the agent so the turn resumes.
-- Idle notifications, driven by the macOS wrapper's local control socket
+- Idle notifications, driven by the wrappers' local control socket
   (`/state`, `/notify`, `/question-notify`): a completion message after 2
   minutes of local inactivity, and a question message after 1 minute.
   The question notification never fires twice for the same request and
