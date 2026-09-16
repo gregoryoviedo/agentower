@@ -105,7 +105,7 @@ internal sealed class SettingsForm : Form
         var header = new Panel { Dock = DockStyle.Top, Height = 40 };
         var hint = new Label
         {
-            Text = "Detecta los binarios en PATH (y las extensiones de VS Code para Copilot).",
+            Text = "Detecta los binarios en PATH (y las extensiones de VS Code para Copilot) y habilita los agentes que Agentower debe seguir.",
             AutoSize = true,
             ForeColor = Color.DimGray,
             Location = new Point(0, 10),
