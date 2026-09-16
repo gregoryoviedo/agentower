@@ -416,18 +416,26 @@ Requiere **Go 1.22+** y el **.NET 8 SDK**. Detalles en
 
 ### Uso
 
-Al primer arranque, el icono aparece en el área de notificación. **Click
-izquierdo** abre el popover (toggle + acciones), **click derecho** el
-menú contextual. Abre **Configuración…**, rellena `WORKSPACE_ROOT`,
-`TELEGRAM_BOT_TOKEN` y `ALLOWED_CHAT_ID`, y en **Agentes** habilita los
-CLIs detectados. Al guardar, el wrapper escribe
-`%APPDATA%\Agentower\settings.json` y `.env`. El toggle arranca y
-detiene el bot.
+`Agentower.exe` es portable. Al ejecutarlo por primera vez **ofrece
+instalarse**: copia el exe a `%LOCALAPPDATA%\Programs\Agentower\`, crea
+los accesos directos (menú Inicio y, opcionalmente, escritorio) y
+registra el arranque con Windows. A partir de ahí no hace falta volver a
+buscar el `.exe`: arranca solo al encender el equipo. También puedes
+forzarlo por CLI (`--install`, `--uninstall`, `--portable`).
+
+Ya en el área de notificación, **click izquierdo** abre el popover
+(toggle + acciones) y **click derecho** el menú contextual. Abre
+**Configuración…**, rellena `WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN` y
+`ALLOWED_CHAT_ID`, y en **Agentes** habilita los CLIs detectados. Al
+guardar, el wrapper escribe `%APPDATA%\Agentower\settings.json` y `.env`.
+El toggle arranca y detiene el bot.
 
 ### Ubicaciones
 
 | Recurso | Ruta |
 |---|---|
+| App instalada | `%LOCALAPPDATA%\Programs\Agentower\Agentower.exe` |
+| Acceso directo | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Agentower.lnk` |
 | Settings (`settings.json`) | `%APPDATA%\Agentower\settings.json` |
 | `.env` para el bot | `%APPDATA%\Agentower\.env` |
 | State DB (SQLite) | `%APPDATA%\Agentower\state.db` |
@@ -440,11 +448,11 @@ El wrapper usa `GetLastInputInfo` para medir la inactividad y consulta el
 servidor de control local del bot (`control.json` → `/state` →
 `/notify` y `/question-notify`) para enviar el mensaje de Telegram y
 mostrar una notificación de Windows cuando una tarea termina o el agente
-hace una pregunta mientras no estás. Al iniciar sesión, `Agentower.exe`
-se lanza automáticamente (clave `Run` del usuario, activada por defecto
-en la primera configuración) y **arranca el bot de inmediato** si la
-configuración es válida, de modo que queda corriendo en segundo plano
-apenas empiezas a trabajar.
+hace una pregunta mientras no estás. La instalación registra el auto-
+inicio en la clave `Run` del usuario (activado por defecto); al
+arrancar, el wrapper **arranca el bot de inmediato** si la configuración
+es válida, de modo que queda corriendo en segundo plano apenas empiezas a
+trabajar.
 
 ## Automatización del inicio (CLI sin wrapper)
 

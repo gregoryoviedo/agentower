@@ -61,6 +61,33 @@ Salida: `dist\Agentower.exe`.
 > framework-dependent:
 > `dotnet publish windows\Agentower\Agentower.csproj -c Release -r win-x64 --self-contained false -o dist`.
 
+## Instalación
+
+`Agentower.exe` es portable: al ejecutarlo **te ofrece instalarse** para
+no depender de la carpeta donde lo descargaste.
+
+1. Doble clic en `Agentower.exe` → aparece el diálogo **Instalar Agentower**.
+2. Deja marcadas las casillas (acceso directo en el escritorio y arranque
+   con Windows) y pulsa **Instalar**.
+3. El exe se copia a `%LOCALAPPDATA%\Programs\Agentower\`, se crean los
+   accesos directos (menú Inicio y, opcionalmente, escritorio) y se
+   registra el auto-inicio. La copia instalada se abre sola y la portable
+   se cierra.
+
+A partir de ahí, Agentower arranca al encender Windows (clave `Run` del
+usuario) y arranca el bot si la configuración es válida. Si eliges
+**Ahora no**, se ejecuta en modo portable y no vuelve a preguntar.
+
+También puedes controlarlo por línea de comandos:
+
+```powershell
+.\Agentower.exe --install              # instala + accesos directos + auto-inicio
+.\Agentower.exe --install --no-desktop # sin acceso directo en el escritorio
+.\Agentower.exe --install --no-autostart
+.\Agentower.exe --portable             # ejecuta sin ofrecer instalar
+.\Agentower.exe --uninstall            # quita auto-inicio y accesos directos
+```
+
 ## Uso
 
 ```powershell
@@ -69,7 +96,8 @@ Salida: `dist\Agentower.exe`.
 
 La primera vez:
 
-1. El icono aparece en el área de notificación.
+1. El icono aparece en el área de notificación (y, tras instalar, el
+   programa queda registrado para el próximo arranque de Windows).
 2. Click izquierdo → **Configuración…**.
 3. Rellena `WORKSPACE_ROOT`, `TELEGRAM_BOT_TOKEN`, `ALLOWED_CHAT_ID`.
 4. En **Agentes**, pulsa *Reintentar detección* y habilita los que uses.
@@ -82,6 +110,8 @@ deténlo y arráncalo de nuevo con el toggle.
 
 | Recurso | Ruta |
 |---|---|
+| App instalada | `%LOCALAPPDATA%\Programs\Agentower\Agentower.exe` |
+| Acceso directo | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Agentower.lnk` |
 | Configuración (`settings.json`) | `%APPDATA%\Agentower\settings.json` |
 | `.env` para el bot | `%APPDATA%\Agentower\.env` |
 | State DB (SQLite) | `%APPDATA%\Agentower\state.db` |
