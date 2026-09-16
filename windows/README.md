@@ -156,7 +156,8 @@ Windows:
 
 Estado de sesiones que lee el bot:
 
-- Claude: `%USERPROFILE%\.claude\projects\<cwd sanitizado>`
+- opencode: `%USERPROFILE%\.local\share\opencode\opencode.db` (SQLite; permite seguir una TUI local sin servidor HTTP)
+- Claude: `%USERPROFILE%\.claude\projects\<cwd sanitizado>` (busca en todos los proyectos)
 - Kiro: `%USERPROFILE%\.kiro`
 - Copilot: `%APPDATA%\Code\User\globalStorage\github.copilot-chat`
 - Codex: `%USERPROFILE%\.codex\sessions`
