@@ -47,7 +47,7 @@ rings, dependency arrows pointing inward only.
                         │ implements
         ────────────────▼───────────────┐
         │           usecase             │
-        │  browser · navigation ·       │
+        │  browser ·                    │
         │  handler · session_watcher     │
         └───────────────┬───────────────┘
                         │ uses
@@ -87,20 +87,17 @@ and every adapter swappable.
 
 Use cases — the rules of the product.
 
-- `WorkspaceBrowser`: walks the workspace, resolves symlinks, enforces the
-  "must stay inside the root" invariant.
-- `NavigationService`: short-lived per-chat navigation records with
-  expiration; only the owning chat can drive the buttons.
-- `Handler`: command router. Resolves the active agent via the
-  `AgentRegistry` and dispatches via the corresponding `AgentAdapter`.
-  After `/projects → Usar esta carpeta` the handler shows the agent
-  picker instead of starting the agent immediately so the user can
-  switch agents at the same time. `/agent` shows the picker again, and
-  `/agents` lists every known agent with an enable/disable toggle plus
-  `/agents migrate` for legacy session migration. Pure dispatch —
-  no knowledge of Telegram specifics; only `BotResponse` values come
-  back. Returns `domain.Err*` sentinels for every recoverable failure
-  so the adapter layer can map them to user-facing replies.
+- `WorkspaceBrowser`: walks and validates the workspace root and resolves
+  relative paths under it. The bot uses it to bound the directories it
+  will accept when it derives a project path from a session.
+- `Handler`: companion router for the two commands that survived the
+  remote-control era, `/status` and `/continue`, plus `/resume`, free
+  text and the notification/question callbacks. Resolves the followed
+  agent via the `AgentRegistry` and dispatches via the corresponding
+  `AgentAdapter`. Pure dispatch — no knowledge of Telegram specifics;
+  only `BotResponse` values come back. Returns `domain.Err*` sentinels
+  for every recoverable failure so the adapter layer can map them to
+  user-facing replies.
 - `SessionWatcher`: polls the active agent and records completion
   snapshots so the wrappers can fire their idle-notification flow. It
   also polls `QuestionAdapter.ListQuestions`; a pending question
@@ -365,9 +362,9 @@ one place — `WorkspaceBrowser.resolve` — and exercised by tests for:
 - Symlinks inside the root that themselves point outside (skipped on
   listing).
 
-Navigation is always relative. The handler never receives an absolute path
-from Telegram; it only receives a navigation record ID and a relative path
-validated against that record.
+The handler never receives a path from Telegram anymore. The workspace
+root is only used to bound the directory derived from a session when the
+bot records a completion.
 
 ## Concurrency model
 
@@ -390,10 +387,6 @@ validated against that record.
   on the main queue; the Windows wrapper via the `Exited` event, posting
   back to the UI `SynchronizationContext`. State updates fan out through
   a single change callback so the icon, uptime label and Settings agree.
-- Navigation records expire after `navigationTTL` (15 minutes); each
-  successful `Enter` / `Back` / `Home` resets the timer. Records are
-  bound to the originating `chatID`, so a callback pressed in another
-  chat returns `ErrUnauthorizedNavigation`.
 
 ## Error handling
 

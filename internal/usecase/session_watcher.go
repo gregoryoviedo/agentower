@@ -43,12 +43,21 @@ type SessionWatcher struct {
 	kind          domain.AgentKind
 	sessionID     string
 	ideLocator    domain.SessionLocator // auto-follow mode for IDE-driven agents
+	armedAt       time.Time             // when the watcher last (re)armed
 	lastCount     int
 	lastStable    time.Time
 	lastTouched   time.Time
 	recorded      bool
 	requestNotify func(chatID int64)
 }
+
+// ideSessionGrace is how long before the watcher armed a session may
+// have been last touched and still be adopted in IDE auto-follow mode.
+// It lets a task that finished just before the bot (re)started be
+// picked up, while ignoring the stale historical sessions the locators
+// otherwise report, which would otherwise be recorded as fresh
+// completions at every launch.
+const ideSessionGrace = 2 * time.Minute
 
 // SessionWatcherOptions configures a SessionWatcher.
 type SessionWatcherOptions struct {
@@ -114,6 +123,7 @@ func (w *SessionWatcher) Watch(chatID int64, kind domain.AgentKind, sessionID st
 	w.kind = kind
 	w.sessionID = sessionID
 	w.ideLocator = nil
+	w.armedAt = w.now()
 	w.lastCount = 0
 	w.lastStable = time.Time{}
 	w.lastTouched = w.now()
@@ -132,10 +142,29 @@ func (w *SessionWatcher) WatchIDE(chatID int64, kind domain.AgentKind, locator d
 	w.kind = kind
 	w.sessionID = ""
 	w.ideLocator = locator
+	w.armedAt = w.now()
 	w.lastCount = 0
 	w.lastStable = time.Time{}
 	w.lastTouched = w.now()
 	w.recorded = false
+}
+
+// ideSessionIsFresh reports whether a newly located session has been
+// touched recently enough to be adopted in IDE auto-follow mode. It
+// keeps the locators from re-recording a long-finished on-disk session
+// as a fresh completion every time the bot starts. A zero TouchedAt
+// means the locator has no timestamp, which we treat as actionable.
+func (w *SessionWatcher) ideSessionIsFresh(as domain.ActiveSession) bool {
+	if as.TouchedAt.IsZero() {
+		return true
+	}
+	w.mu.Lock()
+	armedAt := w.armedAt
+	w.mu.Unlock()
+	if armedAt.IsZero() {
+		return true
+	}
+	return !as.TouchedAt.Before(armedAt.Add(-ideSessionGrace))
 }
 
 // SetRequestNotifier wires the callback used to mark the idle
@@ -217,6 +246,12 @@ func (w *SessionWatcher) tick(ctx context.Context) error {
 			return nil
 		}
 		if as.SessionID != sessionID {
+			if !w.ideSessionIsFresh(as) {
+				// The locator is reporting a session the user left
+				// behind long ago; adopting it would record a phantom
+				// completion at every launch. Wait for real activity.
+				return nil
+			}
 			w.mu.Lock()
 			w.sessionID = as.SessionID
 			w.lastCount = 0

@@ -56,10 +56,11 @@ Hexagonal / Clean Architecture in three concentric layers:
 - `internal/domain` — entities and ports only. No external imports beyond
   the standard library. New capabilities are usually a new **port**
   (interface) here, implemented by adapters.
-- `internal/usecase` — application rules: `Handler` (Telegram command
-  router), `SessionWatcher` (polls the active agent for completions and
-  pending questions), `NavigationService`, `WorkspaceBrowser`. No
-  Telegram-specific types; only `domain.BotResponse` goes back.
+- `internal/usecase` — application rules: `Handler` (Telegram companion
+  router: `/help`, `/status`, `/continue`, `/resume`, free text, question
+  answers), `SessionWatcher` (polls the followed agent for completions and
+  pending questions), `WorkspaceBrowser` (workspace-root resolution/validation).
+  No Telegram-specific types; only `domain.BotResponse` goes back.
 - `internal/adapter` — real-world implementations:
   - `agents/{opencode,claude,kiro,copilot,codex,antigravity}` +
     `agents/registry` + `agents/detector` (PATH + app-bundle/installer
@@ -129,12 +130,16 @@ the same flows; mirror any change in `IdleNotifier.swift` and
 
 - **Completion:** `SessionWatcher` sees the session stop changing and calls
   `Publisher.RequestNotification` → `/state` exposes `PendingNotifChat` →
-  wrapper (idle ≥ 5 min) posts `/notify` → control server sends the
-  Telegram message with buttons.
+  wrapper (idle ≥ 2 min) posts `/notify` → control server sends the
+  Telegram message with buttons. Every agent with a `SessionLocator`
+  gets an auto-follow watcher (`WatchIDE`) so a task finished in a local
+  editor/TUI/server is detected without a Telegram prompt; it ignores
+  sessions last touched before the bot started so a restart does not
+  replay old completions.
 - **Question:** `SessionWatcher.questionBlocks` polls
   `domain.QuestionAdapter.ListQuestions`; a pending question is stored on
   the `Publisher` (`QuestionBroker`) and **suppresses** the completion.
-  The wrapper (idle ≥ 3 min) posts `/question-notify`; the control server
+  The wrapper (idle ≥ 1 min) posts `/question-notify`; the control server
   renders one Telegram message per question with `q|chat|qIdx|optIdx`
   buttons (and `qd|chat|qIdx` to finalize multi-select). Taps and free
   text are handled in `Handler` (`HandleCallback`, `HandleText`), which
@@ -160,8 +165,11 @@ the same flows; mirror any change in `IdleNotifier.swift` and
 
 ## Recent features (context for changes)
 
-- **Multi-agent**: per-chat active agent persisted in `agent_state`; `/agent`,
-  `/agents`, `/agents migrate`.
+- **Companion command surface**: `/help`, `/status`, `/continue`, `/resume`
+  and free text only; the old setup/control commands (`/init`, `/projects`,
+  `/agent`, `/agents`, `/sessions`, `/diff`, `/changes`, `/undo`, `/watch`)
+  were removed. The `NavigationService` and the `agents migrate` flow are
+  gone with them.
 - **Session resume**: `/resume` fans out to `SessionLocator`s
   (opencode HTTP, Claude JSONL, Kiro/VS Code) and `/continue` reactivates
   the last completed session.

@@ -5,11 +5,14 @@ deliberately does not do, and where it is going next.
 
 ## Vision
 
-Agentower turns Telegram into a thin remote control for one of several
+Agentower turns Telegram into a thin **companion** for one of several
 local AI agents — opencode, Claude Code, Kiro, GitHub Copilot, Codex,
 Antigravity.
-The bot is the only surface you interact with on your phone; whichever
-agent is active keeps doing the work locally on your machine.
+The agent keeps doing the work locally on your machine and in your own
+IDE/TUI; the bot watches its sessions, pings you when a task finishes or a
+question is waiting, and lets you continue the session from your phone.
+It is not a full remote control: you don't launch agents, pick projects
+or manage sessions from the chat.
 
 A small native wrapper is shipped alongside the bot so that the same
 single-user workflow can be launched, supervised, and configured from the
@@ -20,13 +23,11 @@ bar) and `Agentower.exe` (C#/.NET WinForms, Windows notification area).
 
 1. You work on a project locally with one of the supported agents.
 2. You leave the computer.
-3. Later, from your phone, you open the bot in Telegram.
-4. You pick a project inside your workspace, choose which agent you
-   want to drive it (or stick with the one you used yesterday), then
-   switch to or create a session and send prompts.
-5. You check progress, run `/diff` and `/undo` (on agents that support
-   them), or jump back into `/sessions`.
-6. When you return home, the local machine has already done the work.
+3. The agent finishes (or asks a question). The bot notices and, once you
+   have been away for the idle threshold, pings you on Telegram.
+4. From your phone you tap **▶️ Continuar sesión** to keep working on that
+   session, check progress with **📝 Ver cambios**, or answer a question.
+5. When you return home, the local machine has already done the work.
 
 The wrapper is the convenient launcher on both platforms:
 
@@ -46,19 +47,13 @@ The wrapper is the convenient launcher on both platforms:
 
 - Long polling against `api.telegram.org` with a strict `ALLOWED_CHAT_ID`
   whitelist.
-- Recursive workspace navigation limited to `WORKSPACE_ROOT`; traversal and
-  escaping symlinks are rejected.
-- Multi-agent picker after `/projects → Usar esta carpeta` so the user
-  chooses (or confirms) which agent drives the folder.
-- Per-chat active agent persisted in `agent_state` (SQLite).
-- Session list, switching and inline creation via the active agent's
-  adapter.
-- Commands: `/start`, `/help`, `/status`, `/projects`, `/agent`,
-  `/agents`, `/agents migrate`, `/init`, `/sessions`, `/diff`,
-  `/changes`, `/undo`, `/watch`, `/continue`, `/resume`.
-- Free-form text prompts forwarded to the active agent.
-- SQLite-backed runtime state (workspace, project, session, agent,
-  navigation).
+- Auto-follow completion detection: every agent with a `SessionLocator`
+  gets a watcher that tracks the freshest session and records the
+  completion without a Telegram prompt.
+- Commands: `/start`, `/help`, `/status`, `/continue`, `/resume`.
+- Free-form text prompts forwarded to the followed session, plus inline
+  answers to the agent's structured questions.
+- SQLite-backed runtime state (workspace, project, session, agent).
 - Configuration loaded from `.env` (with parent directory walk and
   `ENV_FILE` override). Per-agent settings live under
   `AGENT_<KIND>_ENABLED/BIN/PORT/ARGS`.
@@ -81,8 +76,8 @@ The wrapper is the convenient launcher on both platforms:
   through the bot. The user answers with inline buttons or free text and
   the answer is posted back to the agent so the turn resumes.
 - Idle notifications, driven by the macOS wrapper's local control socket
-  (`/state`, `/notify`, `/question-notify`): a completion message after 5
-  minutes of local inactivity, and a question message after 3 minutes.
+  (`/state`, `/notify`, `/question-notify`): a completion message after 2
+  minutes of local inactivity, and a question message after 1 minute.
   The question notification never fires twice for the same request and
   is dropped if the user answered locally first.
 - `TELEGRAM_PROXY_URL` and `TELEGRAM_API_ROOT` for restricted networks.

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
-	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/domain"
 	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
@@ -120,18 +119,12 @@ func newCopilotHandler(t *testing.T, adapter *copilotAdapter, cwd string, now ti
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	browser, err := usecase.NewWorkspaceBrowser(workspace.OSFileSystem{}, cwd)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	pub := &capturingPublisher{}
 	handler := usecase.NewHandler(
-		nil,
 		store,
 		&copilotRegistry{adapter: adapter},
 		&fakeServer{started: true, cwd: cwd},
-		browser,
+		cwd,
 	)
 	handler.SetCompletionPublisher(pub)
 	handler.SetSessionEventLog(store)

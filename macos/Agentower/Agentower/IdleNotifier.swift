@@ -73,8 +73,8 @@ final class IdleNotifier {
     // The thresholds are intentionally generous so the wrapper doesn't
     // become annoying; users can always tune them later in Settings.
     private static let pollInterval: TimeInterval = 5
-    private static let idleThreshold: TimeInterval = 5 * 60
-    private static let questionIdleThreshold: TimeInterval = 3 * 60
+    private static let idleThreshold: TimeInterval = 2 * 60
+    private static let questionIdleThreshold: TimeInterval = 60
     private static let completionFreshness: TimeInterval = 60 * 60
     private static let cooldownAfterNotify: TimeInterval = 60
 

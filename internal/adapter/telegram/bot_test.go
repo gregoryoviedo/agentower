@@ -68,12 +68,11 @@ func TestBotRegistersCommandsOnStart(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if len(capturedCommands) < 6 {
-		t.Fatalf("expected at least 6 commands, got %d", len(capturedCommands))
+	if len(capturedCommands) < 5 {
+		t.Fatalf("expected at least 5 commands, got %d", len(capturedCommands))
 	}
 	want := map[string]bool{
-		"start": false, "help": false, "status": false, "projects": false,
-		"sessions": false, "diff": false, "changes": false, "undo": false,
+		"start": false, "help": false, "status": false, "continue": false, "resume": false,
 	}
 	for _, command := range capturedCommands {
 		want[command["command"]] = true

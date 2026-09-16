@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,7 +12,6 @@ import (
 
 	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
-	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/domain"
 	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
@@ -38,7 +36,10 @@ func (f *fakeServer) OwnsSubprocess(_ domain.AgentKind) bool { return f.started 
 func (f *fakeServer) WorkingDir(_ domain.AgentKind) string   { return f.cwd }
 
 // fakeRegistry wraps an opencode client as the single Available agent.
-type fakeRegistry struct{ client domain.AgentAdapter }
+type fakeRegistry struct {
+	client domain.AgentAdapter
+	active domain.AgentKind
+}
 
 func (r *fakeRegistry) Descriptors() []domain.AgentDescriptor {
 	return []domain.AgentDescriptor{{
@@ -65,40 +66,35 @@ func (r *fakeRegistry) Get(k domain.AgentKind) (domain.AgentAdapter, error) {
 	}
 	return r.client, nil
 }
-func (r *fakeRegistry) Active(_ int64) (domain.AgentKind, error) { return domain.AgentOpenCode, nil }
+func (r *fakeRegistry) Active(_ int64) (domain.AgentKind, error) {
+	if r.active != "" {
+		return r.active, nil
+	}
+	return domain.AgentOpenCode, nil
+}
 func (r *fakeRegistry) SetActive(_ int64, _ domain.AgentKind) error {
 	return nil
 }
 
-func TestEndToEndSelectsProjectThenPrompt(t *testing.T) {
+// TestRepliesToTheFollowedSession is the companion happy path: the bot
+// has a session to follow (set by /continue or a "Continuar sesión"
+// tap) and a free-text message is forwarded to that session.
+func TestRepliesToTheFollowedSession(t *testing.T) {
 	root := t.TempDir()
-	for _, dir := range []string{"work", "work/work1", "work/work2", "personal"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
 
 	opencodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/global/health":
 			fmt.Fprint(w, `{"healthy":true,"version":"dev"}`)
-		case r.URL.Path == "/project":
-			fmt.Fprint(w, `[{"id":"work","worktree":"`+root+`/work","time":{"updated":1700000000000}}]`)
-		case r.URL.Path == "/session" && r.Method == http.MethodGet:
-			fmt.Fprint(w, `[]`)
 		case strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost:
-			fmt.Fprint(w, `{"info":{"id":"m1","parts":[{"type":"text","text":"ok"}]}}`)
+			fmt.Fprint(w, `{"info":{"id":"m1","role":"assistant"},"parts":[{"type":"text","text":"ok"}]}`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer opencodeServer.Close()
 
-	browser, err := usecase.NewWorkspaceBrowser(workspace.OSFileSystem{}, root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -110,33 +106,9 @@ func TestEndToEndSelectsProjectThenPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fake := &fakeServer{started: true}
-	navigation := usecase.NewNavigationService(browser, store)
-	handler := usecase.NewHandler(navigation, store, &fakeRegistry{client: opencodeClient}, fake, browser)
+	handler := usecase.NewHandler(store, &fakeRegistry{client: opencodeClient}, &fakeServer{started: true}, root)
 	ctx := context.Background()
-
-	state, entries, err := navigation.Start(ctx, 42)
-	if err != nil || len(entries) != 2 {
-		t.Fatalf("navigation start failed: entries=%#v err=%v", entries, err)
-	}
-	state, entries, err = navigation.Enter(ctx, state.ID, 42, "work")
-	if err != nil || len(entries) != 2 {
-		t.Fatalf("enter work: entries=%#v err=%v", entries, err)
-	}
-	project, err := navigation.Select(ctx, state.ID, 42, "work/work1")
-	if err != nil || project.RelativePath != "work/work1" {
-		t.Fatalf("select project: project=%#v err=%v", project, err)
-	}
-
-	runtime, err := store.LoadRuntimeState(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime.ProjectID = "work/work1"
-	runtime.RelativePath = project.RelativePath
-	runtime.WorkspaceRoot = project.WorkspaceRoot
-	runtime.SessionID = "ses_does_not_matter"
-	if err := store.SaveRuntimeState(ctx, runtime); err != nil {
+	if err := store.SaveRuntimeState(ctx, domain.RuntimeState{WorkspaceRoot: root, SessionID: "ses_1", AgentKind: domain.AgentOpenCode}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,47 +116,93 @@ func TestEndToEndSelectsProjectThenPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleText err=%v", err)
 	}
-	if resp.Text == "" {
-		t.Fatal("HandleText returned empty response")
+	if !strings.Contains(resp.Text, "ok") {
+		t.Fatalf("HandleText text = %q, want it to contain the agent reply", resp.Text)
 	}
 }
 
-func TestHandlerIgnoresForeignChat(t *testing.T) {
+func TestStatusReportsFollowedSession(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "work"), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	opencodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"healthy":true,"version":"dev"}`)
 	}))
 	defer opencodeServer.Close()
 
-	browser, _ := usecase.NewWorkspaceBrowser(workspace.OSFileSystem{}, root)
 	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
 	defer store.Close()
 	client, _ := agents_opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
 
-	navigation := usecase.NewNavigationService(browser, store)
-	handler := usecase.NewHandler(navigation, store, &fakeRegistry{client: client}, &fakeServer{}, browser)
+	handler := usecase.NewHandler(store, &fakeRegistry{client: client}, &fakeServer{}, root)
 	ctx := context.Background()
-
-	state, _, err := navigation.Start(ctx, 42)
-	if err != nil {
+	if err := store.SaveRuntimeState(ctx, domain.RuntimeState{WorkspaceRoot: root, RelativePath: "work/proj", SessionID: "ses_1", AgentKind: domain.AgentOpenCode}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := navigation.Enter(ctx, state.ID, 99, "work"); err == nil {
-		t.Fatal("Enter accepted foreign chat")
-	}
 
-	resp, err := handler.HandleCommand(ctx, 99, "/status", nil)
+	resp, err := handler.HandleCommand(ctx, 42, "/status", nil)
 	if err != nil {
 		t.Fatalf("status handler: %v", err)
 	}
-	if resp.Text == "" {
-		t.Fatal("status returned empty body")
+	if !strings.Contains(resp.Text, "ses_1") || !strings.Contains(resp.Text, "work/proj") {
+		t.Fatalf("status text = %q, want the followed session and project", resp.Text)
+	}
+}
+
+// TestFreeTextUsesTheSessionsAgentNotTheDefault guards the companion
+// routing rule: a continuation is sent to the agent that owns the
+// followed session, not to whatever the registry considers the chat's
+// default agent.
+func TestFreeTextUsesTheSessionsAgentNotTheDefault(t *testing.T) {
+	root := t.TempDir()
+	opencodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost {
+			fmt.Fprint(w, `{"info":{"id":"m1","role":"assistant"},"parts":[{"type":"text","text":"ok"}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer opencodeServer.Close()
+
+	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	defer store.Close()
+	client, _ := agents_opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
+
+	// The registry's default agent is Kiro, but the followed session
+	// belongs to opencode; the message must go to opencode.
+	handler := usecase.NewHandler(store, &fakeRegistry{client: client, active: domain.AgentKiro}, &fakeServer{}, root)
+	ctx := context.Background()
+	if err := store.SaveRuntimeState(ctx, domain.RuntimeState{WorkspaceRoot: root, SessionID: "ses_1", AgentKind: domain.AgentOpenCode}); err != nil {
+		t.Fatal(err)
 	}
 
-	runtime := domain.RuntimeState{WorkspaceRoot: root}
-	_ = store.SaveRuntimeState(ctx, runtime)
+	resp, err := handler.HandleText(ctx, 42, "hola")
+	if err != nil {
+		t.Fatalf("HandleText err=%v", err)
+	}
+	if !strings.Contains(resp.Text, "ok") {
+		t.Fatalf("HandleText text = %q, want the reply from the session's agent", resp.Text)
+	}
+}
+
+func TestHandleTextWithoutSessionPromptsToContinue(t *testing.T) {
+	root := t.TempDir()
+	opencodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"healthy":true,"version":"dev"}`)
+	}))
+	defer opencodeServer.Close()
+
+	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	defer store.Close()
+	client, _ := agents_opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
+
+	handler := usecase.NewHandler(store, &fakeRegistry{client: client}, &fakeServer{}, root)
+	resp, err := handler.HandleText(context.Background(), 42, "hola")
+	if err != nil {
+		t.Fatalf("HandleText err=%v", err)
+	}
+	if !strings.Contains(resp.Text, "/continue") {
+		t.Fatalf("HandleText text = %q, want it to point the user at /continue", resp.Text)
+	}
 }

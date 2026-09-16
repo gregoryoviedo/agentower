@@ -124,7 +124,7 @@ func TestHandleTextEmitsTypingWhilePromptRuns(t *testing.T) {
 	}
 
 	notifier := &recordingNotifier{}
-	handler := NewHandler(NewNavigationService(browser, store), store, &localRegistry{client: client}, &localFakeServer{started: true}, browser)
+	handler := NewHandler(store, &localRegistry{client: client}, &localFakeServer{started: true}, browser.Root())
 	handler.SetNotifier(notifier)
 
 	if err := store.SaveRuntimeState(context.Background(), domain.RuntimeState{WorkspaceRoot: root, SessionID: "s1"}); err != nil {
@@ -174,7 +174,7 @@ func TestHandleTextWithoutNotifierIsSafe(t *testing.T) {
 	defer store.Close()
 	client, _ := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
 
-	handler := NewHandler(NewNavigationService(browser, store), store, &localRegistry{client: client}, &localFakeServer{started: true}, browser)
+	handler := NewHandler(store, &localRegistry{client: client}, &localFakeServer{started: true}, browser.Root())
 	// Intentionally do NOT call SetNotifier — the handler must remain
 	// safe to use without a typing notifier wired up.
 	_ = store.SaveRuntimeState(context.Background(), domain.RuntimeState{WorkspaceRoot: root, SessionID: "s1"})

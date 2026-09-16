@@ -32,25 +32,23 @@ descarta silenciosamente, sin error ni eco, en el middleware de
 
 **Puede**, mientras el chat esté en la whitelist:
 
-- Navegar recursivamente por `WORKSPACE_ROOT` con un selector de
-  carpetas.
-- Elegir entre los agentes detectados (`/agent`) y activar o
-  deshabilitar cada uno (`/agents`).
-- Crear, listar y seleccionar sesiones del agente y proyecto activos.
-- Enviar prompts de texto libre a la sesión activa.
-- Pedir el diff (`/diff`, `/changes`) y revertir (`/undo`) sobre la
-  sesión activa cuando el agente lo soporte.
-- Arrancar, rearrancar y apagar el subproceso del agente activo mediante
-  `/init`, `/projects → "Usar esta carpeta"` y `/agent`.
+- Avisarte cuando una tarea termina o cuando el agente se queda esperando
+  una respuesta.
+- Continuar la última tarea completada (`/continue`) o la sesión que
+  detecta viva en tu máquina (`/resume`).
+- Enviar prompts de texto libre a la sesión seguida.
+- Pedir el diff de una sesión completada (botón **📝 Ver cambios**).
+- Responder las preguntas del agente con botones o texto.
 
 **No puede**:
 
-- Salir de `WORKSPACE_ROOT`. Toda ruta que llega desde Telegram es
-  relativa al workspace y se valida antes de cualquier efecto (ver
-  siguiente sección).
+- Salir de `WORKSPACE_ROOT`. Ya no recibe rutas desde Telegram; el root
+  solo acota el proyecto que deriva de una sesión.
+- Lanzar, rearrancar ni apagar agentes (`/init`, `/projects`, `/agent`
+  ya no existen).
+- Crear, listar ni seleccionar sesiones arbitrarias desde el chat.
+- Revertir cambios (`/undo` ya no existe).
 - Ejecutar comandos de shell arbitrarios.
-- Escribir archivos arbitrarios — solo lo que OpenCode decida escribir
-  como consecuencia de un prompt.
 - Recibir mensajes de multimedia (voz, imágenes, documentos).
 - Atender a varios chats en paralelo: la whitelist es un único ID.
 
@@ -59,12 +57,16 @@ descarta silenciosamente, sin error ni eco, en el middleware de
 La invariante "toda ruta que toque el bot debe quedar dentro de
 `WORKSPACE_ROOT`" se aplica en **un solo lugar**:
 `WorkspaceBrowser.resolve` (`internal/usecase/workspace_browser.go`).
-Todo lo demás — `Enter`, `Select`, `Back`, `Home` y `/init <ruta>` —
-pasa por ahí.
+
+El handler ya no acepta rutas desde Telegram: no hay navegador de
+carpetas ni `/init <ruta>`. La única ruta que el bot maneja es la que
+viene en una `ActiveSession`/`CompletedSession` (por ejemplo el
+`directory` de una sesión de opencode), y se acota con
+`relativeUnderWorkspace` antes de guardarla.
 
 La validación rechaza:
 
-- Rutas absolutas (incluidas las que vienen en `/init`).
+- Rutas absolutas.
 - Componentes `..` que escaparían del workspace.
 - Symlinks cuyo destino queda fuera de la raíz.
 - Rutas que no existen o no son directorios.
@@ -75,16 +77,14 @@ Al listar, además se omiten:
 - Symlinks cuyo destino está fuera del workspace, incluso si el enlace
   sí está dentro.
 
-Los IDs de navegación son aleatorios y efímeros (TTL 15 min); cada
-callback se valida contra un registro por chat, así un chat no puede
-manipular el navegador de otro aunque conozca un ID válido.
-
 ## Almacenamiento
 
 - El token del bot y el `ALLOWED_CHAT_ID` viven **solo** en `.env` (o en
   variables de shell). No se persisten en SQLite ni en logs.
-- SQLite guarda: `runtime_state` (workspace, proyecto, sesión activa) y
-  `directory_navigation` (registros de navegación efímeros).
+- SQLite guarda: `runtime_state` (workspace, proyecto, sesión seguida),
+  `agent_state` y `completed_session`. La tabla `directory_navigation`
+  es un remanente del antiguo navegador de carpetas y ya no la usa el
+  handler.
 - SQLite **no** guarda: contenidos de prompts, respuestas de OpenCode,
   historial de chat, ni credenciales.
 - El archivo `state.db` se crea con permisos `0600` (sólo el usuario

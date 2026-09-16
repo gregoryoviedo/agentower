@@ -150,19 +150,21 @@ func main() {
 		// Available() returns false. The boot log makes this loud.
 		logger.Warn("opencode binary not found in PATH", "expected_bin", "opencode")
 	}
-	navigation := usecase.NewNavigationService(browser, repository)
 	publisher := control.NewPublisher()
 	locators := usecase.NewActiveLocatorRegistry()
 
 	// The Claude locator needs a workdir at build time; the manager's
 	// workdir is empty until the first Start, so seed it with the
 	// workspace root and let the server manager keep it in sync below.
+	var opencodeLoc *agents_opencode.SessionLocator
 	var claudeLoc *claude.SessionLocator
 	var kiroLoc *kiro.SessionLocator
 	var copilotLoc *copilot.SessionLocator
+	var codexLoc *codex.SessionLocator
 	var antigravityLoc *antigravity.SessionLocator
 	if opencodeDescriptor.Available {
-		locators.Add(agents_opencode.NewSessionLocator(opencodeClient))
+		opencodeLoc = agents_opencode.NewSessionLocator(opencodeClient)
+		locators.Add(opencodeLoc)
 	}
 	if hasDetectedClaude(descriptors) {
 		loc, err := claude.NewSessionLocator(claude.SessionLocatorOptions{
@@ -201,6 +203,7 @@ func main() {
 	if codexDescriptor.Available {
 		loc, err := codex.NewSessionLocator(codex.SessionLocatorOptions{StateDir: cfg.CodexStateDir})
 		if err == nil {
+			codexLoc = loc
 			locators.Add(loc)
 		} else {
 			logger.Warn("build codex locator", "error", err)
@@ -243,11 +246,11 @@ func main() {
 	}
 	serverManager := agents.NewMultiServerManager(serverOpts)
 
-	logger.Info("opencode autostart disabled; send /init from Telegram to bring the server up",
+	logger.Info("opencode server autostart disabled; run `opencode serve` to let the bot follow its sessions",
 		"port", agents.DefaultOpenCodePort)
 	defer serverManager.StopAll()
 
-	handler := usecase.NewHandler(navigation, repository, registry, serverManager, browser)
+	handler := usecase.NewHandler(repository, registry, serverManager, cfg.WorkspaceRoot)
 	handler.SetSessionEventLog(repository)
 	handler.SetSnapshotPublisher(publisher)
 	handler.SetActiveLocators(locators)
@@ -268,37 +271,41 @@ func main() {
 		watcher.Run(stopContext)
 	}()
 
-	// IDE completion watchers: Copilot and Kiro are driven inside VS
-	// Code / the Kiro IDE, so the bot never prompts them. Each watcher
-	// auto-follows the freshest editor session and records the
-	// completion so the macOS wrapper can push the "Tarea completada"
-	// Telegram message after the user has been idle.
-	if copilotLoc != nil {
-		copilotIDE := usecase.NewSessionWatcher(registry, repository, repository, publisher, watcherOpts)
-		copilotIDE.SetRequestNotifier(publisher.RequestNotification)
-		copilotIDE.WatchIDE(cfg.AllowedChatID, domain.AgentCopilot, copilotLoc)
-		go func() {
-			copilotIDE.Run(stopContext)
-		}()
+	// Auto-follow completion watchers: one per agent that exposes a
+	// SessionLocator. Agents driven inside an editor or a local
+	// terminal (Copilot/Kiro in their IDEs, opencode/Claude/Codex in a
+	// local TUI or the Agentower-spawned server) are never prompted by
+	// the bot, so each watcher auto-follows the freshest session the
+	// locator reports and records the completion. The wrapper then
+	// pushes the "Tarea completada" Telegram message once the user is
+	// idle. WatchIDE ignores sessions left untouched before the bot
+	// started, so a restart does not replay old completions.
+	startAutoFollow := func(kind domain.AgentKind, loc domain.SessionLocator) {
+		ideWatcher := usecase.NewSessionWatcher(registry, repository, repository, publisher, watcherOpts)
+		ideWatcher.SetRequestNotifier(publisher.RequestNotification)
+		ideWatcher.WatchIDE(cfg.AllowedChatID, kind, loc)
+		go ideWatcher.Run(stopContext)
+	}
+	if opencodeLoc != nil {
+		startAutoFollow(domain.AgentOpenCode, opencodeLoc)
+	}
+	if claudeLoc != nil {
+		startAutoFollow(domain.AgentClaude, claudeLoc)
 	}
 	if kiroLoc != nil {
-		kiroIDE := usecase.NewSessionWatcher(registry, repository, repository, publisher, watcherOpts)
-		kiroIDE.SetRequestNotifier(publisher.RequestNotification)
-		kiroIDE.WatchIDE(cfg.AllowedChatID, domain.AgentKiro, kiroLoc)
-		go func() {
-			kiroIDE.Run(stopContext)
-		}()
+		startAutoFollow(domain.AgentKiro, kiroLoc)
+	}
+	if copilotLoc != nil {
+		startAutoFollow(domain.AgentCopilot, copilotLoc)
+	}
+	if codexLoc != nil {
+		startAutoFollow(domain.AgentCodex, codexLoc)
 	}
 	// The Antigravity IDE shares the ~/.gemini state root with the CLI,
 	// so a task finished in the editor is detected and notified without
 	// the user touching Telegram.
 	if antigravityLoc != nil {
-		antigravityIDE := usecase.NewSessionWatcher(registry, repository, repository, publisher, watcherOpts)
-		antigravityIDE.SetRequestNotifier(publisher.RequestNotification)
-		antigravityIDE.WatchIDE(cfg.AllowedChatID, domain.AgentAntigravity, antigravityLoc)
-		go func() {
-			antigravityIDE.Run(stopContext)
-		}()
+		startAutoFollow(domain.AgentAntigravity, antigravityLoc)
 	}
 
 	bot, err := telegram.New(telegram.Config{

@@ -128,7 +128,7 @@ func (b *Bot) SendResponse(ctx context.Context, chatID int64, response domain.Bo
 
 func (b *Bot) register(allowedChatID int64) {
 	authorized := middleware.Whitelist(allowedChatID)
-	commands := []string{"/start", "/help", "/status", "/projects", "/agent", "/agents", "/init", "/sessions", "/diff", "/changes", "/undo", "/watch", "/continue", "/resume"}
+	commands := []string{"/start", "/help", "/status", "/continue", "/resume"}
 	for _, command := range commands {
 		command := command
 		b.client.Handle(command, func(c tele.Context) error {
@@ -165,17 +165,9 @@ func (b *Bot) registerCommands() error {
 	commands := []tele.Command{
 		{Text: "start", Description: "👋 Bienvenida y ayuda."},
 		{Text: "help", Description: "❓ Lista de comandos."},
-		{Text: "projects", Description: "📂 Elegir proyecto."},
-		{Text: "agent", Description: "🤖 Elegir o cambiar el agente activo."},
-		{Text: "agents", Description: "🧩 Lista y activa/desactiva agentes."},
-		{Text: "init", Description: "🚀 Arrancar el agente activo."},
-		{Text: "status", Description: "💡 Estado actual."},
-		{Text: "sessions", Description: "💬 Sesiones activas."},
-		{Text: "diff", Description: "📝 Cambios de la sesión."},
-		{Text: "changes", Description: "📝 Alias de /diff."},
-		{Text: "undo", Description: "↩️ Revertir último cambio."},
-		{Text: "watch", Description: "👀 Vigilar una sesión hasta que termine."},
-		{Text: "continue", Description: "▶️ Reactivar la última sesión completada."},
+		{Text: "status", Description: "💡 Qué sesión estoy siguiendo."},
+		{Text: "continue", Description: "▶️ Retomar la última tarea completada."},
+		{Text: "resume", Description: "🔎 Seguir la sesión activa en mi Mac."},
 	}
 	if err := b.client.SetCommands(commands); err != nil {
 		return fmt.Errorf("set bot commands: %w", err)

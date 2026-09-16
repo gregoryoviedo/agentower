@@ -36,7 +36,7 @@ El proyecto sigue hexagonal / clean architecture:
 ```text
 internal/
   domain/      entidades y puertos (sin imports externos)
-  usecase/     navegador del workspace, navegación, bot handler, session watcher
+  usecase/     bot handler (acompañante), session watcher, workspace browser
   adapter/
     agents/
       opencode/    cliente REST + manager del subproceso
@@ -50,7 +50,7 @@ internal/
       registry.go  AgentRegistry + per-chat active pick
       process_*.go manejo de proceso por SO (unix/windows)
     telegram/  long polling, whitelist, callbacks
-    storage/   repositorio SQLite (runtime_state, agent_state, directory_navigation, completed_session)
+    storage/   repositorio SQLite (runtime_state, agent_state, completed_session)
     control/   servidor HTTP local para los wrappers (/state, /notify, /question-notify)
     workspace/ adaptador de filesystem
     config/      cargador de .env (AGENT_<KIND>_*)
@@ -74,13 +74,13 @@ Hay cuatro sitios que deben quedar en sincronía:
    que Telegram muestra en el menú autocompletar).
 3. `internal/usecase/bot_handler.go` → case en `HandleCommand` con la
    lógica.
-4. `internal/usecase/` → test del flujo nuevo (usa un
-   `WorkspaceBrowser` real y un `*recordingServer` o equivalente;
-   `bot_handler_init_test.go` es un buen ejemplo).
+4. `internal/usecase/` → test del flujo nuevo. Los tests construyen el
+   `Handler` con `NewHandler(store, registry, serverManager, workspaceRoot)`
+   y usan un `*fakeRegistry`/`*fakeServer` o un `httptest` para el agente
+   (`bot_handler_e2e_test.go` es un buen ejemplo).
 
-Si el comando requiere subcomandos parseados a mano (`/sessions new`,
-`/sessions <id>`), conviene centralizar el parsing en una función
-pequeña y cubrir cada rama en el test.
+Si el comando requiere subcomandos parseados a mano, conviene centralizar
+el parsing en una función pequeña y cubrir cada rama en el test.
 
 ## Añadir una variable de entorno nueva
 

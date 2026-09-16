@@ -144,7 +144,7 @@ struct SettingsView: View {
                 agentRow(row: $row)
             }
             HStack {
-                Text("Detecta los binarios en PATH (y los bundles de VS Code para Copilot) y permite habilitar cada agente desde Telegram con /agents.")
+                Text("Detecta los binarios en PATH (y los bundles de VS Code para Copilot) y habilita los agentes que Agentower debe seguir.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()

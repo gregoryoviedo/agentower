@@ -37,11 +37,11 @@ superficie de ataque pública más allá de la API de bots de Telegram.
   sobreviven a reinicios.
 - **Aviso de tarea completada** — cuando el agente termina y no hubo
   actividad local, el wrapper (macOS o Windows) te manda un mensaje a
-  Telegram (a los 5 minutos de inactividad) con la previsualización y
+  Telegram (a los 2 minutos de inactividad) con la previsualización y
   botones para continuar o ver cambios.
 - **Preguntas respondibles desde Telegram** — si el agente se detiene a
   pedir una decisión con opciones (hoy: opencode), el wrapper te reenvía
-  la pregunta con botones a los 3 minutos de inactividad; tu respuesta
+  la pregunta con botones al minuto de inactividad; tu respuesta
   (botón o texto) vuelve al agente que está corriendo en tu máquina.
 - **App nativa para macOS (opcional)** — menú-barra con toggle, settings
   con formulario, auto-start al login, sección multi-agente con detección
@@ -174,20 +174,23 @@ Las claves disponibles son:
 
 ## Multi-agente
 
-El bot puede manejar varios agentes de IA simultáneamente. Cada chat
-de Telegram elige su agente activo en `/projects → Usar esta carpeta`
-o vía el comando `/agent`. Los agentes disponibles son los que el
-detector encuentra en `PATH` o, si no están ahí, en las ubicaciones de
-instalación de cada uno: bundles de apps en macOS (Kiro CLI, GitHub
-Copilot de VS Code, Antigravity) y directorios por usuario en Windows
-(`%APPDATA%\npm`, `%LOCALAPPDATA%\Programs`, `~/.opencode`, `~/.bun`,
-`~/.codex`, …). Los lanzamientos desde la GUI heredan un `PATH` mínimo
-(Finder/launchd en macOS, el entorno de Explorer en Windows), así que el
-bot lo aumenta antes de detectar con los directorios habituales del
-usuario (`~/.local/bin`, `~/.nvm/...`, Homebrew, `%APPDATA%\npm`, …).
-Cambiar de agente no apaga los demás: Agentower puede mantener
-varios procesos vivos a la vez y cambiar el "activo" en Telegram sin
-rearrancar.
+Agentower es una extensión de Telegram para **seguir** a tus agentes, no
+para controlarlos por completo. Detecta los agentes instalados y observa
+sus sesiones sin que tengas que elegir nada: cada agente con un
+`SessionLocator` tiene un observador que detecta cuándo termina una tarea
+o hace una pregunta, y te avisa por Telegram. Desde el chat podés
+continuar la sesión y responder, pero el agente lo seguís manejando en tu
+IDE/TUI.
+
+Los agentes disponibles son los que el detector encuentra en `PATH` o, si
+no están ahí, en las ubicaciones de instalación de cada uno: bundles de
+apps en macOS (Kiro CLI, GitHub Copilot de VS Code, Antigravity) y
+directorios por usuario en Windows (`%APPDATA%\npm`,
+`%LOCALAPPDATA%\Programs`, `~/.opencode`, `~/.bun`, `~/.codex`, …). Los
+lanzamientos desde la GUI heredan un `PATH` mínimo (Finder/launchd en
+macOS, el entorno de Explorer en Windows), así que el bot lo aumenta
+antes de detectar con los directorios habituales del usuario
+(`~/.local/bin`, `~/.nvm/...`, Homebrew, `%APPDATA%\npm`, …).
 
 Cómo se comunica cada agente:
 
@@ -213,57 +216,47 @@ Puertos reservados por agente (cada uno override-able por env):
 
 ### Auto-arranque del servidor
 
-Por defecto el servidor OpenCode **no** se levanta al iniciar el bot.
-Arrancarlo es responsabilidad tuya vía `/init` (atajo manual) o
-`/projects → Usar esta carpeta` (cuando seleccionas un proyecto). Esto se
-debe a que `opencode serve` queda atado a la carpeta desde la que lo
-arrancas, así que el bot prefiere esperar a que le digas qué proyecto
-quieres antes de gastar un puerto.
+Por defecto Agentower **no** arranca los servidores de los agentes. La
+idea es que los abras tú, en tu terminal o IDE (`opencode serve`, Kiro,
+Claude Code, etc.): el bot se limita a seguir sus sesiones. Esto también
+evita que el puerto de un agente quede atado a una carpeta que no elegiste.
 
-Sea como sea, el bot siempre apaga el servidor cuando recibe `Ctrl+C` o
-una señal de terminación: con `SIGTERM`/`SIGKILL` en macOS/Linux, y con
-`taskkill /T /F` del árbol de procesos en Windows.
+Para opencode, el observador consulta su API HTTP, así que necesita que
+`opencode serve` esté corriendo (el puerto por defecto es el 4096); si
+usás la TUI local, ese proceso no expone un puerto al bot y sus sesiones
+no se detectan hasta que levantes el server.
+
+El bot apaga los subprocesos que sí haya arrancado él cuando recibe
+`Ctrl+C` o una señal de terminación: con `SIGTERM`/`SIGKILL` en
+macOS/Linux, y con `taskkill /T /F` del árbol de procesos en Windows.
 
 ## Comandos
 
 | Comando                | Descripción                                             |
 |------------------------|---------------------------------------------------------|
 | `/start` / `/help`     | Bienvenida y lista de comandos.                         |
-| `/agent`               | Muestra el picker de agentes (opencode, Claude, Kiro, Copilot, Codex, Antigravity). |
-| `/agents`              | Lista los agentes detectados con toggle enable/disable.  |
-| `/agents migrate`      | Marca sesiones heredadas como `opencode` (compatibilidad). |
-| `/status`              | Salud del agente activo y proyecto/sesión activos.       |
-| `/projects`            | Selector recursivo de carpetas; al confirmar, **muestra el picker de agente** y (re)arranca el servidor elegido. |
-| `/init`                | (Re)arranca el agente activo en la carpeta activa. Acepta una ruta **relativa al workspace** (`/init work/proyecto`). |
-| `/sessions`            | Lista o crea sesiones del proyecto y agente activos. Acepta `new` (crea y activa) o un `id` de sesión. |
-| `/diff` / `/changes`   | Archivos modificados por la sesión activa.              |
-| `/undo`                | Revierte el último cambio.                              |
-| `/watch [sesión]`      | Vigila la sesión activa (o la pasada por id) hasta que termine. |
-| `/continue`            | Reactiva la última sesión completada.                    |
+| `/status`              | Qué agente y sesión está siguiendo el bot.              |
+| `/continue`            | Retoma la última tarea completada (la activa para responder). |
 | `/resume`              | Detecta la sesión que se está ejecutando en tu máquina y te ofrece seguirla desde Telegram. |
-| texto libre            | Prompt directo a la sesión activa del agente. Si hay una pregunta pendiente del agente, el texto se envía como **respuesta a esa pregunta**. |
+| texto libre            | Responde a la sesión activa del agente. Si hay una pregunta pendiente del agente, el texto se envía como **respuesta a esa pregunta**. |
 
-Los Inline Keyboards manejan el resto: carpetas, "Atrás", "Inicio", "Usar
-esta carpeta", selección de agente, selección de sesión y "Nueva sesión".
+Los Inline Keyboards manejan el resto: **▶️ Continuar sesión** y **📝 Ver
+cambios** en las notificaciones, y las opciones de las preguntas del
+agente.
 
-## Modelo de agente activo
+## Qué sesión sigue el bot
 
-Cada agente se ata a un directorio desde el que lo arrancas, de manera
-similar al `opencode serve` original. Agentower maneja varios agentes a
-la vez y el bot cambia el "activo" en Telegram sin matar los demás:
+Agentower no necesita que le indiques proyecto ni agente. Cada agente con
+locator tiene un observador que auto-sigue la sesión más reciente del
+usuario (por ejemplo la que estás usando en Kiro, VS Code o en
+`opencode serve`) y registra el completado cuando deja de cambiar.
+Ignora sesiones que no se tocaron desde que el bot arrancó, así que un
+reinicio no rerescribe completados viejos.
 
-- **`/projects` → "Usar esta carpeta"**: el bot muestra el picker de agente
-  y, una vez elegido, (re)arranca el agente seleccionado con la carpeta
-  recién seleccionada como CWD.
-- **`/agent`**: cambia el agente activo del chat en cualquier momento, sin
-  tocar la carpeta ni los procesos de los demás agentes.
-- **`/init [ruta]`**: atajo para rearrancar el agente activo sin cambiar de
-  agente. Si pasas una ruta, se usa como nueva CWD; si no, se reutiliza
-  la carpeta activa.
-
-> Si el agente activo está apagado, cualquier comando (`/status`,
-> `/sessions`, `/diff`, `/undo`, texto libre) devuelve un mensaje pidiéndote
-> ejecutar `/init`.
+Cuando tocas **▶️ Continuar sesión** (o usás `/continue`), esa sesión pasa
+a ser la activa y el texto libre que escribas se envía ahí. `/resume` hace
+lo mismo pero consultando en el momento qué sesión está viva en tu
+máquina.
 
 ## Notificaciones por inactividad
 
@@ -272,23 +265,23 @@ El wrapper observa cuánto tiempo llevas sin tocar el teclado o el mouse
 estado del bot por un socket local. Con eso dispara dos flujos, pensados
 para cuando te alejas de la computadora:
 
-### Tarea completada (5 minutos)
+### Tarea completada (2 minutos)
 
 1. El `SessionWatcher` detecta que la sesión dejó de cambiar y guarda un
    snapshot de completado.
-2. Si pasan **5 minutos sin actividad local**, la app le pide al bot que
+2. Si pasan **2 minutos sin actividad local**, la app le pide al bot que
    te avise por Telegram.
 3. Recibes un mensaje con proyecto, sesión, previsualización y botones
    **▶️ Continuar sesión** y **📝 Ver cambios**.
 
-### Pregunta del agente (3 minutos)
+### Pregunta del agente (1 minuto)
 
 Aplica a agentes que pueden pausar a mitad de una tarea para pedir una
 decisión con opciones (hoy **opencode**, vía su *question tool*).
 
 1. El `SessionWatcher` detecta la pregunta pendiente y **no** marca la
    tarea como completada (el agente no terminó, está esperando).
-2. Si pasan **3 minutos sin actividad local**, la pregunta se reenvía a
+2. Si pasan **1 minuto sin actividad local**, la pregunta se reenvía a
    Telegram: encabezado, pregunta y una opción por botón (más el aviso de
    que podés responder con texto si la pregunta admite respuesta libre).
 3. Respondés tocando una opción o escribiendo el texto. La respuesta se
@@ -297,7 +290,7 @@ decisión con opciones (hoy **opencode**, vía su *question tool*).
    todas se envían juntas al agente. Cuando la tarea termina, entra el
    flujo normal de "tarea completada".
 
-Los umbrales (3 y 5 minutos) están en `IdleNotifier.swift` (macOS) y
+Los umbrales (1 y 2 minutos) están en `IdleNotifier.swift` (macOS) y
 `IdleNotifier.cs` (Windows). El aviso Telegram para una pregunta ya
 enviada no se repite; si la respondiste en la terminal, el bot descarta
 el aviso pendiente.

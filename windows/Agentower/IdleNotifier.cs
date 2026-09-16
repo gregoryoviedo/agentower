@@ -15,8 +15,8 @@ namespace Agentower;
 /// </summary>
 internal sealed class IdleNotifier : IDisposable
 {
-    private static readonly TimeSpan IdleThreshold = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan QuestionIdleThreshold = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan IdleThreshold = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan QuestionIdleThreshold = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan CompletionFreshness = TimeSpan.FromHours(1);
     private static readonly TimeSpan CooldownAfterNotify = TimeSpan.FromSeconds(60);
 

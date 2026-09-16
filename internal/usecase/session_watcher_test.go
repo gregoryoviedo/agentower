@@ -410,6 +410,60 @@ func TestSessionWatcherWatchIDERecordsAndRequestsNotification(t *testing.T) {
 	}
 }
 
+// TestSessionWatcherWatchIDEIgnoresStaleSession covers the guard that
+// keeps a restart from replaying the freshest historical on-disk
+// session as a brand-new completion: a session last touched well
+// before the watcher armed must not be adopted.
+func TestSessionWatcherWatchIDEIgnoresStaleSession(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	msgs := []domain.Message{
+		{Info: domain.MessageInfo{ID: "u1", Role: "user"}, Parts: []domain.MessagePart{{Type: "text", Text: "hola"}}},
+		{Info: domain.MessageInfo{ID: "a1", Role: "assistant"}, Parts: []domain.MessagePart{{Type: "text", Text: "respuesta"}}},
+	}
+	adapter := &staticAdapter{msgs: msgs}
+	reg := &kindAdapterRegistry{kind: domain.AgentKiro, adapter: adapter}
+
+	pub := &recordingCompletionPublisher{}
+	watcher := NewSessionWatcher(reg, store, store, pub, SessionWatcherOptions{
+		PollInterval:  10 * time.Millisecond,
+		IdleInterval:  10 * time.Millisecond,
+		IdleThreshold: 5 * time.Millisecond,
+		Clock:         time.Now,
+	})
+
+	loc := &staticLocator{
+		kind: domain.AgentKiro,
+		as: domain.ActiveSession{
+			Kind:      domain.AgentKiro,
+			SessionID: "ide-stale",
+			Directory: "/tmp/work",
+			TouchedAt: time.Now().Add(-time.Hour),
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watcher.Run(ctx)
+	}()
+	watcher.WatchIDE(42, domain.AgentKiro, loc)
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	if got := pub.count.Load(); got != 0 {
+		t.Fatalf("publisher count = %d, want 0 for a stale session", got)
+	}
+}
+
 // recordingQuestionBroker is a minimal domain.QuestionBroker for the
 // watcher tests: it remembers the published question and counts clears.
 type recordingQuestionBroker struct {

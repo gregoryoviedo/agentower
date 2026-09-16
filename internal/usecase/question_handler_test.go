@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
-	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/control"
 	"github.com/gregoryoviedo/agentower/internal/domain"
 	"github.com/gregoryoviedo/agentower/internal/usecase"
@@ -58,17 +57,12 @@ func (a *questionStubAdapter) ReplyQuestion(_ context.Context, sessionID, reques
 func newQuestionHandler(t *testing.T, adapter *questionStubAdapter) (*usecase.Handler, *control.Publisher) {
 	t.Helper()
 	root := t.TempDir()
-	browser, err := usecase.NewWorkspaceBrowser(workspace.OSFileSystem{}, root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	navigation := usecase.NewNavigationService(browser, store)
-	handler := usecase.NewHandler(navigation, store, &fakeRegistry{client: adapter}, &fakeServer{started: true}, browser)
+	handler := usecase.NewHandler(store, &fakeRegistry{client: adapter}, &fakeServer{started: true}, root)
 	publisher := control.NewPublisher()
 	handler.SetQuestionBroker(publisher)
 	return handler, publisher

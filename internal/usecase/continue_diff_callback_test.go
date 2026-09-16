@@ -10,7 +10,6 @@ import (
 
 	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
-	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/domain"
 	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
@@ -33,12 +32,11 @@ func TestHandlerContinueAndDiffCallbacks(t *testing.T) {
 	}))
 	defer server.Close()
 
-	browser, _ := usecase.NewWorkspaceBrowser(workspace.OSFileSystem{}, root)
 	store, _ := sqlite.Open(t.TempDir() + "/state.db")
 	defer store.Close()
 	client, _ := agents_opencode.NewClient(server.URL, &http.Client{Timeout: time.Second})
 
-	handler := usecase.NewHandler(usecase.NewNavigationService(browser, store), store, &fakeRegistry{client: client}, &fakeServer{started: true}, browser)
+	handler := usecase.NewHandler(store, &fakeRegistry{client: client}, &fakeServer{started: true}, root)
 	handler.SetSessionEventLog(store)
 
 	const chatID = 42

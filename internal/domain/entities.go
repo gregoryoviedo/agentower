@@ -28,8 +28,9 @@ type RuntimeState struct {
 }
 
 // AgentState records the per-chat agent pick and whether each known
-// agent is enabled for that chat. A row with enabled=false hides the
-// agent from /agents and from the project picker.
+// agent is enabled for that chat. The enabled map is seeded by the
+// registry; the wrapper's settings drive the AGENT_<KIND>_ENABLED env
+// instead.
 type AgentState struct {
 	ChatID    int64
 	Enabled   map[AgentKind]bool

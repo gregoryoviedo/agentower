@@ -11,7 +11,6 @@ import (
 
 	agents_opencode "github.com/gregoryoviedo/agentower/internal/adapter/agents/opencode"
 	"github.com/gregoryoviedo/agentower/internal/adapter/storage/sqlite"
-	"github.com/gregoryoviedo/agentower/internal/adapter/workspace"
 	"github.com/gregoryoviedo/agentower/internal/domain"
 	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
@@ -28,10 +27,7 @@ import (
 // the small drift and assert on second-precise outputs).
 func newResumeFixture(t *testing.T, workspaceDir string, now time.Time) (*usecase.Handler, *sqlite.Repository, domain.ActiveLocatorRegistry) {
 	t.Helper()
-	browser, err := usecase.NewWorkspaceBrowser(workspace.OSFileSystem{}, workspaceDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := workspaceDir
 	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -59,11 +55,10 @@ func newResumeFixture(t *testing.T, workspaceDir string, now time.Time) (*usecas
 	reg := usecase.NewActiveLocatorRegistry()
 	fake := &fakeServer{started: true, cwd: workspaceDir}
 	handler := usecase.NewHandler(
-		usecase.NewNavigationService(browser, store),
 		store,
 		&fakeRegistry{client: client},
 		fake,
-		browser,
+		root,
 	)
 	handler.SetActiveLocators(reg)
 	handler.SetClock(func() time.Time { return now })
