@@ -85,7 +85,7 @@ compatibility; prefer `AgentAdapter` / `AgentRegistry` /
 
 | Agent    | Transport | History |
 |----------|-----------|---------|
-| opencode | HTTP `opencode serve` | REST (`/session`, `/api/question`) |
+| opencode | HTTP `opencode serve` + SQLite `~/.local/share/opencode/opencode.db` | REST (`/session`, `/api/question`) / DB (`session`,`message`,`part`) |
 | claude   | stdio JSON (`claude --print --output-format stream-json`) | `~/.claude/projects/<cwd>/<id>.jsonl` |
 | kiro     | ACP (`kiro-cli acp`, newline framing) | `~/.kiro/sessions/<ws>/<id>/messages.jsonl` |
 | copilot  | ACP CLI, or LSP for the VS Code bundle | VS Code `session-store.db` |
@@ -114,6 +114,12 @@ Notes and gotchas:
   by default). Antigravity's per-conversation `.db` files are opaque
   protobuf; the adapters read the readable `transcript_full.jsonl` and
   `history.jsonl` instead.
+- opencode's interactive TUI binds **no HTTP port** by default (`--port`
+  defaults to 0), so the bot follows it through the SQLite store
+  (`OpenHistory`/`HistoryLocator`, `AGENTOWER_OPENCODE_STATE_DIR` to
+  override). `ListMessages` prefers the store and falls back to HTTP.
+  The Claude locator likewise scans **every** `~/.claude/projects/*/`
+  (`Global: true`) so a `claude` launched in any folder is followed.
 - opencode's question API has changed shape/path across releases
   (`/api/question`, `/question`, `/api/question/request`). The adapter
   tries the known paths and tolerates both a `questions` array and a

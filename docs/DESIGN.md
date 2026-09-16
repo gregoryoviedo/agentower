@@ -13,8 +13,8 @@ architectural decisions and trade-offs that shaped the code.
   headless from a terminal.
 - Strict layering: pure domain, swappable adapters, easy testing.
 - Multi-agent: one Telegram chat at a time can drive any of the bundled
-  adapters (opencode HTTP, Claude/Kiro stdio JSON, GitHub Copilot
-  LSP, Codex `exec --json`, Antigravity `agy --output-format stream-json`).
+  adapters (opencode HTTP + SQLite history, Claude/Kiro stdio JSON, GitHub
+  Copilot LSP, Codex `exec --json`, Antigravity `agy --output-format stream-json`).
   Each agent has its own slot in the AgentServerManager.
 - Strict security by default: workspace-bounded, single-user, no public
   ports.
@@ -113,12 +113,18 @@ Adapters that implement the ports and depend on real-world libraries.
 - `adapter/agents/opencode`: HTTP client for `http://127.0.0.1:<port>`,
   plus a subprocess manager that starts, probes, and kills
   `opencode serve` with a graceful SIGTERM → SIGKILL shutdown. JSON
-  responses are capped at 32 MB via `io.LimitReader`.
+  responses are capped at 32 MB via `io.LimitReader`. Reads
+  (`HistoryLocator`, `ListMessages`) prefer the SQLite store at
+  `~/.local/share/opencode/opencode.db` (`session`, `message`, `part`)
+  and fall back to HTTP, so a locally-launched TUI — which binds no HTTP
+  port (`--port` defaults to 0) — is still followed.
 - `adapter/agents/claude`: stdio JSON transport over
   `claude --print --output-format stream-json --verbose --session-id
   <uuid> --cwd <dir>`. Sessions are spawned lazily on first prompt;
   the manager reaps the subprocess once the trailing `result` event
-  lands.
+  lands. The session locator scans **every** `~/.claude/projects/*/`
+  (global mode) and resolves the real cwd from the JSONL, so a `claude`
+  launched in any folder is followed.
 - `adapter/agents/kiro`: ACP client over
   `kiro-cli acp --agent-engine v3 --auth-method cli` (newline framing)
   with `TrustAll: true` (permission requests auto-approved). Sessions can
@@ -255,9 +261,12 @@ feature-equivalent:
 
 - **Inbound (Go bot)**: only `api.telegram.org`. No listening sockets
   apart from the loopback control socket used by the wrappers.
-- **Outbound (Go bot)**: loopback only — `127.0.0.1:4096` for opencode,
-  or stdin/stdout pipes for Claude / Kiro / Codex / Antigravity, or a
-  loopback JSON-RPC stream for the GitHub Copilot LSP.
+- **Outbound (Go bot)**: loopback only — `127.0.0.1:4096` for opencode
+  writes, plus on-disk reads of opencode's SQLite store
+  (`~/.local/share/opencode/opencode.db`) and Claude's
+  `~/.claude/projects/*/` JSONL. stdin/stdout pipes for Claude / Kiro /
+  Codex / Antigravity, or a loopback JSON-RPC stream for the GitHub
+  Copilot LSP.
 - **Storage**: a single SQLite file with the runtime state.
 - **Storage (macOS wrapper)**: `UserDefaults` for Settings, a `0600`
   `.env` for the bot, and the bot's own SQLite file at

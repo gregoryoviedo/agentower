@@ -301,12 +301,8 @@ func (m *Manager) listSessions(_ context.Context) ([]domain.Session, error) {
 // returns the messages in order. The Claude wire format is one JSON
 // event per line; we collapse to one Message per role switch.
 func (m *Manager) readSessionMessages(_ context.Context, sessionID string) ([]domain.Message, error) {
-	root, err := m.sessionHistoryRoot()
-	if err != nil {
-		return nil, nil
-	}
-	file, err := os.Open(filepath.Join(root, sessionID+".jsonl"))
-	if err != nil {
+	file, err := m.openSessionFile(sessionID)
+	if err != nil || file == nil {
 		return nil, nil
 	}
 	defer file.Close()
@@ -337,6 +333,28 @@ func (m *Manager) readSessionMessages(_ context.Context, sessionID string) ([]do
 		})
 	}
 	return out, nil
+}
+
+// openSessionFile opens <sessionID>.jsonl. It first tries the manager's
+// current workdir project folder and, when that misses, scans every
+// project directory under ~/.claude/projects. The fallback lets the bot
+// read history for a `claude` the user launched outside the workspace
+// root. Returns (nil, nil) when the session has no JSONL yet.
+func (m *Manager) openSessionFile(sessionID string) (*os.File, error) {
+	if root, err := m.sessionHistoryRoot(); err == nil {
+		if file, ferr := os.Open(filepath.Join(root, sessionID+".jsonl")); ferr == nil {
+			return file, nil
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	path, ok := findSessionFile(filepath.Join(home, ".claude"), sessionID)
+	if !ok {
+		return nil, nil
+	}
+	return os.Open(path)
 }
 
 // sessionHistoryRoot returns ~/.claude/projects/<sanitized cwd>. The

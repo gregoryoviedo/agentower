@@ -13,18 +13,19 @@ import (
 )
 
 type Config struct {
-	WorkspaceRoot   string
-	StatePath       string
-	TelegramToken   string
-	TelegramAPIRoot string
-	TelegramProxy   string
-	AllowedChatID   int64
-	EnvFile         string
-	StaleAfter      time.Duration
-	CopilotStateDir string
-	ClaudeStateDir  string
-	KiroStateDir    string
-	CodexStateDir   string
+	WorkspaceRoot    string
+	StatePath        string
+	TelegramToken    string
+	TelegramAPIRoot  string
+	TelegramProxy    string
+	AllowedChatID    int64
+	EnvFile          string
+	StaleAfter       time.Duration
+	OpencodeStateDir string
+	CopilotStateDir  string
+	ClaudeStateDir   string
+	KiroStateDir     string
+	CodexStateDir    string
 	// AntigravityStateDir points at the shared ~/.gemini root; the
 	// adapter derives the `antigravity-cli` (CLI) and `antigravity`
 	// (IDE) subdirectories from it.
@@ -71,6 +72,7 @@ func Load() (*Config, error) {
 	cfg.AllowedChatID = chatID
 
 	cfg.StaleAfter = parseDurationEnv("AGENTOWER_STALE_AFTER", 30*time.Minute)
+	cfg.OpencodeStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_OPENCODE_STATE_DIR"))
 	cfg.CopilotStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_COPILOT_STATE_DIR"))
 	cfg.ClaudeStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_CLAUDE_STATE_DIR"))
 	cfg.KiroStateDir = strings.TrimSpace(os.Getenv("AGENTOWER_KIRO_STATE_DIR"))

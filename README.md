@@ -21,7 +21,7 @@ superficie de ataque pública más allá de la API de bots de Telegram.
 
 ## Características
 
-- **Multi-agente** — un solo bot maneja opencode (HTTP), Claude Code
+- **Multi-agente** — un solo bot maneja opencode (HTTP + SQLite), Claude Code
   (stdio JSON), Kiro (ACP sobre `kiro-cli`), GitHub Copilot (ACP/LSP),
   Codex (`codex exec --json`) y Antigravity (`agy --output-format
   stream-json`). Cada chat puede cambiar de agente sobre la marcha desde
@@ -157,6 +157,7 @@ Las claves disponibles son:
 |-----------------------|--------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
 | `AGENTOWER_STATE_PATH`   | `<WORKSPACE_ROOT>/.agentower/state.db`           | Ubicación de la base SQLite.                                                                             |
 | `AGENTOWER_STALE_AFTER`   | `30m`                                           | Sesiones más viejas que esto se ignoran en `/resume`.                                                      |
+| `AGENTOWER_OPENCODE_STATE_DIR` | `~/.local/share/opencode`                  | Override del path de la base SQLite de opencode (historial de sesiones).                                 |
 | `AGENTOWER_COPILOT_STATE_DIR` | derivado del SO                            | Override del path de VS Code globalStorage para Copilot Chat.                                            |
 | `AGENTOWER_CLAUDE_STATE_DIR`  | `~/.claude`                                  | Override del path de Claude Code.                                                                        |
 | `AGENTOWER_KIRO_STATE_DIR`    | `~/.kiro`                                    | Override del path de Kiro (CLI e IDE).                                                                   |
@@ -196,7 +197,7 @@ Cómo se comunica cada agente:
 
 | Agente    | Transporte                                  | Historial / sesiones                        |
 |-----------|---------------------------------------------|---------------------------------------------|
-| opencode  | HTTP (`opencode serve`)                     | API REST (`/session`, `/api/question`)      |
+| opencode  | HTTP (`opencode serve`) + SQLite (`opencode.db`) | REST (`/session`, `/api/question`) / BD local (`session`, `message`, `part`) |
 | claude    | stdio JSON (`claude --print --output-format stream-json`) | JSONL en `~/.claude/projects/<cwd>/`        |
 | kiro      | ACP (`kiro-cli acp`)                        | JSONL en `~/.kiro/sessions/<ws>/<id>/`       |
 | copilot   | ACP (CLI) / LSP (bundle de VS Code)         | `session-store.db` de VS Code globalStorage |
@@ -221,10 +222,13 @@ idea es que los abras tú, en tu terminal o IDE (`opencode serve`, Kiro,
 Claude Code, etc.): el bot se limita a seguir sus sesiones. Esto también
 evita que el puerto de un agente quede atado a una carpeta que no elegiste.
 
-Para opencode, el observador consulta su API HTTP, así que necesita que
-`opencode serve` esté corriendo (el puerto por defecto es el 4096); si
-usás la TUI local, ese proceso no expone un puerto al bot y sus sesiones
-no se detectan hasta que levantes el server.
+Para opencode, el observador lee directamente su base SQLite
+(`~/.local/share/opencode/opencode.db`), así que sigue tanto la TUI local
+como `opencode serve` sin necesidad de puerto. El servidor HTTP solo hace
+falta para **enviar** prompts desde Telegram (texto libre o `/continue`);
+si no está corriendo, la lectura de historial y la detección de
+completados siguen funcionando igual. Si lo quieres igual, puedes fijar el
+puerto con `opencode serve --port 4096` o `opencode --port 4096`.
 
 El bot apaga los subprocesos que sí haya arrancado él cuando recibe
 `Ctrl+C` o una señal de terminación: con `SIGTERM`/`SIGKILL` en
@@ -248,8 +252,9 @@ agente.
 
 Agentower no necesita que le indiques proyecto ni agente. Cada agente con
 locator tiene un observador que auto-sigue la sesión más reciente del
-usuario (por ejemplo la que estás usando en Kiro, VS Code o en
-`opencode serve`) y registra el completado cuando deja de cambiar.
+usuario (por ejemplo la que estás usando en Kiro, VS Code o en `opencode`
+—tanto la TUI como `opencode serve`—) y registra el completado cuando deja
+de cambiar.
 Ignora sesiones que no se tocaron desde que el bot arrancó, así que un
 reinicio no rerescribe completados viejos.
 

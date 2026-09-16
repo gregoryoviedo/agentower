@@ -216,6 +216,37 @@ func TestReadSessionMessagesMissingFileIsSafe(t *testing.T) {
 	}
 }
 
+// TestReadSessionMessagesFindsSessionInOtherProject proves the global
+// fallback: a session whose JSONL lives in a project folder other than
+// the manager's workdir is still readable, so the watcher can follow a
+// `claude` launched anywhere.
+func TestReadSessionMessagesFindsSessionInOtherProject(t *testing.T) {
+	home := withFakeHome(t)
+	m := NewManager("claude", 4097)
+	m.MarkStarted("/Users/test/dev/proj")
+
+	otherDir := filepath.Join(home, ".claude", "projects", "-Users-test-dev-elsewhere")
+	if err := os.MkdirAll(otherDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hey"}]}}` + "\n"
+	if err := os.WriteFile(filepath.Join(otherDir, "glob1.jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := m.readSessionMessages(context.Background(), "glob1")
+	if err != nil {
+		t.Fatalf("readSessionMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[1].Parts[0].Text != "hey" {
+		t.Fatalf("unexpected messages: %#v", msgs)
+	}
+}
+
 // TestSessionHistoryRootSanitizesWorkdir makes sure the path layout
 // matches Claude Code's convention: slashes become dashes and the
 // result always starts with a dash. This is what `claude --resume`

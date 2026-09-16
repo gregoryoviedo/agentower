@@ -55,3 +55,29 @@ func resolveProjectDir(base, workdir string) string {
 	}
 	return filepath.Join(base, "projects", candidates[0])
 }
+
+// findSessionFile looks for <sessionID>.jsonl under every project
+// directory in <base>/projects. Session ids are globally unique, so the
+// first match wins. This lets history readers resolve a session that
+// lives outside the manager's current workdir.
+func findSessionFile(base, sessionID string) (string, bool) {
+	if sessionID == "" {
+		return "", false
+	}
+	projects := filepath.Join(base, "projects")
+	entries, err := os.ReadDir(projects)
+	if err != nil {
+		return "", false
+	}
+	target := sessionID + ".jsonl"
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(projects, entry.Name(), target)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
+}

@@ -25,6 +25,7 @@ type Client struct {
 	baseURL string
 	http    *http.Client
 	prompt  *http.Client
+	history *History
 }
 
 type promptPayload struct {
@@ -297,6 +298,12 @@ func (c *Client) FileStatus(ctx context.Context, sessionID string) ([]domain.Fil
 	return changes, nil
 }
 
+// SetHistory attaches the on-disk SQLite reader. When set, ListMessages
+// prefers it and only falls back to the HTTP server when the store has
+// no rows for the session. This lets the bot follow a locally-launched
+// `opencode` that never started an HTTP server.
+func (c *Client) SetHistory(h *History) { c.history = h }
+
 // ListMessages returns the messages currently stored in the given session,
 // in the order returned by OpenCode (oldest first). The watcher uses this
 // to detect when a session has gone idle after a prompt and to inspect the
@@ -304,6 +311,11 @@ func (c *Client) FileStatus(ctx context.Context, sessionID string) ([]domain.Fil
 func (c *Client) ListMessages(ctx context.Context, sessionID string) ([]domain.Message, error) {
 	if sessionID == "" {
 		return nil, errors.New("session id must not be empty")
+	}
+	if c.history != nil {
+		if messages, err := c.history.ListMessages(ctx, sessionID); err == nil && len(messages) > 0 {
+			return messages, nil
+		}
 	}
 	var dto []messageWithPartsDTO
 	path := "/session/" + url.PathEscape(sessionID) + "/message"

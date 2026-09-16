@@ -49,7 +49,10 @@ The wrapper is the convenient launcher on both platforms:
   whitelist.
 - Auto-follow completion detection: every agent with a `SessionLocator`
   gets a watcher that tracks the freshest session and records the
-  completion without a Telegram prompt.
+  completion without a Telegram prompt. opencode is followed through its
+  SQLite store (`~/.local/share/opencode/opencode.db`), so a local TUI
+  with no HTTP port works; Claude's locator scans every
+  `~/.claude/projects/*/`, so any folder works.
 - Commands: `/start`, `/help`, `/status`, `/continue`, `/resume`.
 - Free-form text prompts forwarded to the followed session, plus inline
   answers to the agent's structured questions.
@@ -160,17 +163,19 @@ The wrapper is the convenient launcher on both platforms:
   Kiro/Copilot only surface `session/request_permission`, which the ACP
   adapters auto-approve (`TrustAll`). Permission prompts and ACP
   elicitation are not forwarded to Telegram today.
-- Detecting questions for sessions the bot is not watching (e.g. an
-  opencode TUI session started outside Telegram and never followed by
-  the watcher).
+- Detecting structured questions for locally-driven sessions: the
+  opencode question API needs `opencode serve` (the TUI exposes no port),
+  and the file/stdio locators used by the other agents do not surface
+  questions.
 
 ## Trust boundaries
 
 - The Telegram Bot API is the only network surface the Go bot depends
   on.
 - The active agent is assumed to be reachable on a loopback port
-  (`AGENT_OPENCODE_PORT`, `AGENT_CLAUDE_PORT`, …) or via stdin/stdout
-  when the adapter is stdio-based.
+  (`AGENT_OPENCODE_PORT`, `AGENT_CLAUDE_PORT`, …), via stdin/stdout when
+  the adapter is stdio-based, or through its local session store
+  (opencode's SQLite DB, Claude's `~/.claude/projects/`).
 - The bot token and chat ID live in `.env` (or shell env), never in
   SQLite.
 - SQLite stores the active project, active session, per-chat active

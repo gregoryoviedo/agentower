@@ -126,6 +126,96 @@ func TestSessionLocatorKindMatches(t *testing.T) {
 	}
 }
 
+// TestSessionLocatorGlobalScansEveryProject proves the global locator
+// follows a session living in a project folder other than the
+// configured workdir, and recovers the real cwd from the JSONL.
+func TestSessionLocatorGlobalScansEveryProject(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, ".claude")
+	now := time.Now()
+
+	otherCwd := "/Users/me/other"
+	otherDir := filepath.Join(stateDir, "projects", "-Users-me-other")
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONL(t, filepath.Join(otherDir, "fresh.jsonl"), []map[string]any{
+		{"type": "attachment", "cwd": otherCwd, "timestamp": now.Format(time.RFC3339Nano)},
+		{
+			"type":      "assistant",
+			"timestamp": now.Format(time.RFC3339Nano),
+			"message":   map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "done elsewhere"}}},
+		},
+	})
+
+	scopedDir := filepath.Join(stateDir, "projects", "-Users-me-proj")
+	if err := os.MkdirAll(scopedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(scopedDir, "stale.jsonl")
+	writeJSONL(t, stale, []map[string]any{
+		{
+			"type":      "assistant",
+			"cwd":       "/Users/me/proj",
+			"timestamp": now.Add(-3 * time.Hour).Format(time.RFC3339Nano),
+			"message":   map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "old"}}},
+		},
+	})
+	old := now.Add(-3 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	loc, err := claude.NewSessionLocator(claude.SessionLocatorOptions{
+		Workdir:  "/Users/me/proj",
+		StateDir: stateDir,
+		Global:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := loc.Locate(context.Background())
+	if err != nil {
+		t.Fatalf("locate: %v", err)
+	}
+	if sess.SessionID != "fresh" {
+		t.Fatalf("session id = %q, want fresh", sess.SessionID)
+	}
+	if sess.Directory != otherCwd {
+		t.Fatalf("directory = %q, want %q", sess.Directory, otherCwd)
+	}
+	if sess.Project != "other" {
+		t.Fatalf("project = %q, want other", sess.Project)
+	}
+}
+
+// TestSessionLocatorGlobalAllowsEmptyWorkdir documents that global mode
+// no longer requires a workdir.
+func TestSessionLocatorGlobalAllowsEmptyWorkdir(t *testing.T) {
+	if _, err := claude.NewSessionLocator(claude.SessionLocatorOptions{
+		StateDir: t.TempDir(),
+		Global:   true,
+	}); err != nil {
+		t.Fatalf("global locator with empty workdir: %v", err)
+	}
+}
+
+// TestSessionLocatorGlobalNoProjects ensures the global locator returns
+// the sentinel when ~/.claude/projects does not exist yet.
+func TestSessionLocatorGlobalNoProjects(t *testing.T) {
+	loc, err := claude.NewSessionLocator(claude.SessionLocatorOptions{
+		StateDir: t.TempDir(),
+		Global:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = loc.Locate(context.Background())
+	if !errors.Is(err, domain.ErrNoActiveSession) {
+		t.Fatalf("expected ErrNoActiveSession, got %v", err)
+	}
+}
+
 func writeJSONL(t *testing.T, path string, events []map[string]any) {
 	t.Helper()
 	file, err := os.Create(path)

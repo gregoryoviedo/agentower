@@ -32,22 +32,29 @@ type SessionLocator struct {
 	mu       sync.RWMutex
 	workdir  string
 	stateDir string // override for AGENTOWER_CLAUDE_STATE_DIR (testing)
+	global   bool
 	now      func() time.Time
 }
 
-// SessionLocatorOptions tunes the locator. Workdir is required; the
-// other fields are best-effort overrides used by tests.
+// SessionLocatorOptions tunes the locator. Workdir is required unless
+// Global is set; the other fields are best-effort overrides used by
+// tests.
 type SessionLocatorOptions struct {
 	Workdir  string
 	StateDir string // base dir that contains "projects/". defaults to ~/.claude
-	Now      func() time.Time
+	// Global makes Locate scan every project directory under
+	// <base>/projects instead of only the one matching Workdir. This
+	// lets the bot follow a `claude` the user launched in any folder.
+	Global bool
+	Now    func() time.Time
 }
 
 // NewSessionLocator builds the locator. Workdir must be the absolute
 // path of the project the user is currently working in; it is the
-// same value the manager is started with.
+// same value the manager is started with. When Global is set, Workdir
+// is optional because every project directory is scanned.
 func NewSessionLocator(opts SessionLocatorOptions) (*SessionLocator, error) {
-	if opts.Workdir == "" {
+	if opts.Workdir == "" && !opts.Global {
 		return nil, errors.New("claude locator: Workdir is required")
 	}
 	now := opts.Now
@@ -57,6 +64,7 @@ func NewSessionLocator(opts SessionLocatorOptions) (*SessionLocator, error) {
 	return &SessionLocator{
 		workdir:  opts.Workdir,
 		stateDir: opts.StateDir,
+		global:   opts.Global,
 		now:      now,
 	}, nil
 }
@@ -84,7 +92,11 @@ func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, erro
 	l.mu.RLock()
 	workdir := l.workdir
 	stateDir := l.stateDir
+	global := l.global
 	l.mu.RUnlock()
+	if global {
+		return l.locateGlobal(stateDir)
+	}
 	if workdir == "" {
 		return domain.ActiveSession{}, errors.New("claude locator: no workdir configured")
 	}
@@ -118,12 +130,77 @@ func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, erro
 		return domain.ActiveSession{}, domain.ErrNoActiveSession
 	}
 	sessionID := strings.TrimSuffix(freshest.Name(), ".jsonl")
-	preview, touchedAt, _ := l.peekJSONL(filepath.Join(root, freshest.Name()))
+	preview, _, touchedAt, _ := l.peekJSONL(filepath.Join(root, freshest.Name()))
 	return domain.ActiveSession{
 		Kind:      domain.AgentClaude,
 		SessionID: sessionID,
 		Project:   filepath.Base(workdir),
 		Directory: workdir,
+		Title:     sessionID[:min(8, len(sessionID))],
+		Preview:   preview,
+		TouchedAt: touchedAt,
+		Source:    "jsonl",
+	}, nil
+}
+
+// locateGlobal scans every project directory under <base>/projects and
+// returns the session with the newest .jsonl so a `claude` launched in
+// any folder is followed, mirroring how the other agents' locators
+// work. The session's real cwd is recovered from the JSONL events; the
+// sanitized project folder name is only a fallback.
+func (l *SessionLocator) locateGlobal(stateDir string) (domain.ActiveSession, error) {
+	base, err := l.baseDir(stateDir)
+	if err != nil {
+		return domain.ActiveSession{}, err
+	}
+	projects := filepath.Join(base, "projects")
+	entries, err := os.ReadDir(projects)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return domain.ActiveSession{}, domain.ErrNoActiveSession
+		}
+		return domain.ActiveSession{}, fmt.Errorf("read claude projects dir: %w", err)
+	}
+	var freshest string
+	var freshestInfo os.FileInfo
+	for _, dirEntry := range entries {
+		if !dirEntry.IsDir() {
+			continue
+		}
+		dirPath := filepath.Join(projects, dirEntry.Name())
+		files, err := os.ReadDir(dirPath)
+		if err != nil {
+			continue
+		}
+		for _, file := range files {
+			if file.IsDir() || !strings.HasSuffix(file.Name(), ".jsonl") {
+				continue
+			}
+			info, err := file.Info()
+			if err != nil {
+				continue
+			}
+			if freshestInfo == nil || info.ModTime().After(freshestInfo.ModTime()) {
+				freshest = filepath.Join(dirPath, file.Name())
+				freshestInfo = info
+			}
+		}
+	}
+	if freshest == "" {
+		return domain.ActiveSession{}, domain.ErrNoActiveSession
+	}
+	sessionID := strings.TrimSuffix(filepath.Base(freshest), ".jsonl")
+	preview, cwd, touchedAt, _ := l.peekJSONL(freshest)
+	directory := cwd
+	if directory == "" {
+		directory = strings.TrimPrefix(filepath.Dir(freshest), projects+string(os.PathSeparator))
+	}
+	project := filepath.Base(directory)
+	return domain.ActiveSession{
+		Kind:      domain.AgentClaude,
+		SessionID: sessionID,
+		Project:   project,
+		Directory: directory,
 		Title:     sessionID[:min(8, len(sessionID))],
 		Preview:   preview,
 		TouchedAt: touchedAt,
@@ -137,31 +214,40 @@ func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, erro
 // manager.go. An existing candidate wins so a directory created by a
 // different Claude Code release is still found.
 func (l *SessionLocator) sessionRoot(stateDir, workdir string) (string, error) {
-	base := stateDir
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("locate home: %w", err)
-		}
-		base = filepath.Join(home, ".claude")
+	base, err := l.baseDir(stateDir)
+	if err != nil {
+		return "", err
 	}
 	return resolveProjectDir(base, workdir), nil
 }
 
+// baseDir resolves the Claude state root (the folder that contains
+// "projects/"), defaulting to ~/.claude when no override is set.
+func (l *SessionLocator) baseDir(stateDir string) (string, error) {
+	if stateDir != "" {
+		return stateDir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locate home: %w", err)
+	}
+	return filepath.Join(home, ".claude"), nil
+}
+
 // peekJSONL reads the tail of the file to extract the most recent
-// assistant text and the most recent event timestamp. The Claude
-// JSONL stream is one event per line; the last "assistant" event
-// before a "result" is what the user last saw. TouchedAt falls back
-// to the file's mtime when no timestamped event is found.
-func (l *SessionLocator) peekJSONL(path string) (preview string, touchedAt time.Time, err error) {
+// assistant text, the session cwd and the most recent event timestamp.
+// The Claude JSONL stream is one event per line; the last "assistant"
+// event before a "result" is what the user last saw. TouchedAt falls
+// back to the file's mtime when no timestamped event is found.
+func (l *SessionLocator) peekJSONL(path string) (preview, cwd string, touchedAt time.Time, err error) {
 	info, statErr := os.Stat(path)
 	if statErr != nil {
-		return "", time.Time{}, statErr
+		return "", "", time.Time{}, statErr
 	}
 	touchedAt = info.ModTime()
 	file, err := os.Open(path)
 	if err != nil {
-		return "", touchedAt, err
+		return "", "", touchedAt, err
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
@@ -178,6 +264,9 @@ func (l *SessionLocator) peekJSONL(path string) (preview string, touchedAt time.
 					touchedAt = t
 				}
 			}
+		}
+		if c, ok := event["cwd"].(string); ok && c != "" {
+			cwd = c
 		}
 		role, _ := event["type"].(string)
 		if role != "assistant" {
@@ -206,12 +295,12 @@ func (l *SessionLocator) peekJSONL(path string) (preview string, touchedAt time.
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return lastAssistant, touchedAt, err
+		return lastAssistant, cwd, touchedAt, err
 	}
 	if len(lastAssistant) > 240 {
 		lastAssistant = lastAssistant[:240] + "…"
 	}
-	return lastAssistant, touchedAt, nil
+	return lastAssistant, cwd, touchedAt, nil
 }
 
 // min avoids pulling in the builtin (Go 1.21+) so this file compiles

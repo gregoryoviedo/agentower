@@ -87,6 +87,14 @@ func main() {
 		logger.Error("initialize opencode client", "error", err)
 		os.Exit(1)
 	}
+	// Attach opencode's SQLite store (best-effort). It is the only
+	// transport that sees a locally-launched `opencode` TUI, which does
+	// not expose an HTTP server on the configured port.
+	opencodeHistory := openOpencodeHistory(cfg, logger)
+	if opencodeHistory != nil {
+		defer opencodeHistory.Close()
+		opencodeClient.SetHistory(opencodeHistory)
+	}
 	opencodeManager := agents_opencode.NewManager(agents_opencode.ManagerOptions{
 		Bin:    opencodeBin(descriptors, opencodeDescriptor),
 		Port:   agents.DefaultOpenCodePort,
@@ -156,20 +164,25 @@ func main() {
 	// The Claude locator needs a workdir at build time; the manager's
 	// workdir is empty until the first Start, so seed it with the
 	// workspace root and let the server manager keep it in sync below.
-	var opencodeLoc *agents_opencode.SessionLocator
+	var opencodeLoc domain.SessionLocator
 	var claudeLoc *claude.SessionLocator
 	var kiroLoc *kiro.SessionLocator
 	var copilotLoc *copilot.SessionLocator
 	var codexLoc *codex.SessionLocator
 	var antigravityLoc *antigravity.SessionLocator
 	if opencodeDescriptor.Available {
-		opencodeLoc = agents_opencode.NewSessionLocator(opencodeClient)
+		if opencodeHistory != nil {
+			opencodeLoc = agents_opencode.NewHistoryLocator(opencodeHistory)
+		} else {
+			opencodeLoc = agents_opencode.NewSessionLocator(opencodeClient)
+		}
 		locators.Add(opencodeLoc)
 	}
 	if hasDetectedClaude(descriptors) {
 		loc, err := claude.NewSessionLocator(claude.SessionLocatorOptions{
 			Workdir:  cfg.WorkspaceRoot,
 			StateDir: cfg.ClaudeStateDir,
+			Global:   true,
 		})
 		if err != nil {
 			logger.Warn("build claude locator", "error", err)
@@ -439,6 +452,30 @@ func opencodeBin(descriptors []domain.AgentDescriptor, opencode domain.AgentDesc
 		}
 	}
 	return "opencode"
+}
+
+// openOpencodeHistory opens opencode's SQLite store (best-effort). A
+// missing database — opencode never launched, or not installed — is not
+// fatal: the bot simply keeps using the HTTP transport.
+func openOpencodeHistory(cfg *config.Config, logger *slog.Logger) *agents_opencode.History {
+	path := ""
+	if dir := strings.TrimSpace(cfg.OpencodeStateDir); dir != "" {
+		path = filepath.Join(dir, "opencode.db")
+	} else {
+		resolved, err := agents_opencode.DefaultDBPath()
+		if err != nil {
+			logger.Warn("resolve opencode db path", "error", err)
+			return nil
+		}
+		path = resolved
+	}
+	history, err := agents_opencode.OpenHistory(path)
+	if err != nil {
+		logger.Info("opencode sqlite history unavailable; using HTTP transport", "path", path, "error", err)
+		return nil
+	}
+	logger.Info("opencode sqlite history enabled", "path", path)
+	return history
 }
 
 // kiroBin returns the Kiro CLI binary the kiro manager should spawn.
