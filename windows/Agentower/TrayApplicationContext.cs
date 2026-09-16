@@ -35,6 +35,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         settingsItem.Click += (_, _) => ShowSettings();
         var logItem = new ToolStripMenuItem("Abrir registro");
         logItem.Click += (_, _) => OpenLog();
+        var installItem = new ToolStripMenuItem("Instalar en el sistema…");
+        installItem.Click += (_, _) => InstallToSystem();
+        installItem.Visible = !Installer.IsInstalled;
         var quitItem = new ToolStripMenuItem("Salir de Agentower");
         quitItem.Click += (_, _) => Quit();
 
@@ -43,6 +46,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_toggleItem);
         _menu.Items.Add(settingsItem);
         _menu.Items.Add(logItem);
+        _menu.Items.Add(installItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(quitItem);
 
@@ -173,6 +177,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.BalloonTipText = body;
         _tray.BalloonTipIcon = ToolTipIcon.Info;
         _tray.ShowBalloonTip(5000);
+    }
+
+    private void InstallToSystem()
+    {
+        using var form = new InstallForm(Installer.InstalledCopyExists);
+        if (form.ShowDialog() != DialogResult.OK) return;
+        Installer.Install(form.DesktopShortcut, form.Autostart);
+        // Hand over to the installed copy; this instance releases the
+        // single-instance mutex on exit and the new one picks it up.
+        Installer.StartInstalled();
+        Quit();
     }
 
     private void Quit()

@@ -20,11 +20,13 @@ internal static class AutostartManager
         }
     }
 
-    public static void Enable()
+    public static void Enable() => Enable(ExecutablePath());
+
+    public static void Enable(string exePath)
     {
         using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true)
             ?? Registry.CurrentUser.CreateSubKey(RunKey, writable: true);
-        key.SetValue(ValueName, "\"" + ExecutablePath() + "\"");
+        key.SetValue(ValueName, "\"" + exePath + "\"");
     }
 
     public static void Disable()
