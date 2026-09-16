@@ -78,6 +78,10 @@ A partir de ahí, Agentower arranca al encender Windows (clave `Run` del
 usuario) y arranca el bot si la configuración es válida. Si eliges
 **Ahora no**, se ejecuta en modo portable y no vuelve a preguntar.
 
+La instalación también registra Agentower en **Aplicaciones instaladas**
+(Configuración → Aplicaciones → Aplicaciones instaladas), así puedes
+desinstalarlo como cualquier otro programa.
+
 También puedes controlarlo por línea de comandos:
 
 ```powershell
@@ -85,8 +89,24 @@ También puedes controlarlo por línea de comandos:
 .\Agentower.exe --install --no-desktop # sin acceso directo en el escritorio
 .\Agentower.exe --install --no-autostart
 .\Agentower.exe --portable             # ejecuta sin ofrecer instalar
-.\Agentower.exe --uninstall            # quita auto-inicio y accesos directos
+.\Agentower.exe --uninstall            # desinstala (pregunta si borrar datos)
+.\Agentower.exe --uninstall --quiet    # desinstala y borra todo, sin preguntar
 ```
+
+## Desinstalación
+
+Hay tres formas equivalentes:
+
+1. **Aplicaciones instaladas** → busca *Agentower* → **Desinstalar**.
+2. Menú del tray (click derecho) → **Desinstalar Agentower…**.
+3. CLI: `.\Agentower.exe --uninstall` (interactivo) o
+   `--uninstall --quiet` (borra también configuración y token).
+
+Quita el auto-inicio, los accesos directos, la entrada de *Aplicaciones
+instaladas* y, si eliges borrar datos, `%APPDATA%\Agentower` (token,
+workspace, estado) y `%LOCALAPPDATA%\Agentower` (logs y binario extraído).
+Deja el `.exe` portable que hayas descargado; puedes reinstalar desde él
+en cualquier momento.
 
 ## Uso
 
