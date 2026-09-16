@@ -21,10 +21,7 @@ internal static class Program
 
         if (args.Contains("--uninstall"))
         {
-            Installer.Uninstall();
-            MessageBox.Show(
-                "Agentower se quitó del inicio automático y se borraron los accesos directos.",
-                "Agentower", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            Installer.Uninstall(quiet: args.Contains("--quiet") || args.Contains("--yes"));
             return;
         }
 

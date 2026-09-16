@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Win32;
 
 namespace Agentower;
 
@@ -7,10 +8,15 @@ namespace Agentower;
 /// there is no MSI: on first launch it offers to copy itself into
 /// %LOCALAPPDATA%\Programs\Agentower, drop Start Menu / Desktop shortcuts
 /// and register itself to start with Windows. Everything lives in the
-/// current user's profile, so no elevation is required.
+/// current user's profile, so no elevation is required. It also registers
+/// an entry under HKCU\...\Uninstall so Windows shows it in
+/// "Apps & features" with a working Uninstall button.
 /// </summary>
 internal static class Installer
 {
+    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Agentower";
+
     public static string InstallDirectory { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Programs", "Agentower");
@@ -29,6 +35,9 @@ internal static class Installer
 
     public static bool PortableMode => File.Exists(PortableFlagPath);
 
+    public static string Version =>
+        (typeof(Installer).Assembly.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
+
     private static string StartMenuShortcutPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.Programs), "Agentower.lnk");
 
@@ -45,7 +54,7 @@ internal static class Installer
     {
         if (!IsInstalled)
         {
-            StopRunningInstalledCopy();
+            StopRunningInstances();
             Directory.CreateDirectory(InstallDirectory);
             File.Copy(CurrentExePath, InstalledExePath, overwrite: true);
         }
@@ -57,14 +66,53 @@ internal static class Installer
         if (autostart)
             AutostartManager.Enable(InstalledExePath);
 
+        RegisterUninstallEntry();
+
         try { if (File.Exists(PortableFlagPath)) File.Delete(PortableFlagPath); } catch { }
     }
 
-    public static void Uninstall()
+    /// <summary>
+    /// Removes the shortcuts, the auto-start entry and the "Apps &amp;
+    /// features" registration, stops every running Agentower/remote-bot
+    /// process and schedules the deletion of the program directory (and,
+    /// optionally, the user data) for right after this process exits.
+    /// Returns false if the user cancelled the confirmation.
+    /// </summary>
+    public static bool Uninstall(bool quiet)
     {
+        if (!quiet)
+        {
+            var confirm = System.Windows.Forms.MessageBox.Show(
+                "¿Desinstalar Agentower?\n\nSe quitarán el auto-inicio, los accesos directos y la aplicación instalada.",
+                "Agentower", System.Windows.Forms.MessageBoxButtons.YesNo, System.Windows.Forms.MessageBoxIcon.Question);
+            if (confirm != System.Windows.Forms.DialogResult.Yes)
+                return false;
+        }
+
+        bool purgeData = true;
+        if (!quiet)
+        {
+            var data = System.Windows.Forms.MessageBox.Show(
+                "¿Borrar también la configuración guardada (token de Telegram, workspace, estado y logs)?\n\n" +
+                "Elige «No» para conservarla por si reinstalas.",
+                "Agentower", System.Windows.Forms.MessageBoxButtons.YesNo, System.Windows.Forms.MessageBoxIcon.Question);
+            purgeData = data == System.Windows.Forms.DialogResult.Yes;
+        }
+
+        StopRunningInstances();
         AutostartManager.Disable();
         TryDelete(StartMenuShortcutPath);
         TryDelete(DesktopShortcutPath);
+        RemoveUninstallEntry();
+
+        var toRemove = new List<string> { InstallDirectory };
+        if (purgeData)
+        {
+            toRemove.Add(AppPaths.LocalDirectory);
+            toRemove.Add(AppPaths.SupportDirectory);
+        }
+        ScheduleRemoval(toRemove);
+        return true;
     }
 
     public static void StartInstalled()
@@ -80,34 +128,93 @@ internal static class Installer
         }
     }
 
-    /// <summary>
-    /// Stops an already-installed copy that is running, so an update can
-    /// overwrite the exe and start the new build.
-    /// </summary>
-    private static void StopRunningInstalledCopy()
+    private static void RegisterUninstallEntry()
     {
-        int self = Environment.ProcessId;
-        string target = Normalize(InstalledExePath);
-        foreach (Process proc in Process.GetProcessesByName("Agentower"))
+        try
         {
-            if (proc.Id == self) continue;
+            using var key = Registry.CurrentUser.CreateSubKey(UninstallKey);
+            key.SetValue("DisplayName", "Agentower");
+            key.SetValue("DisplayVersion", Version);
+            key.SetValue("Publisher", "Agentower");
+            key.SetValue("DisplayIcon", InstalledExePath);
+            key.SetValue("InstallLocation", InstallDirectory);
+            key.SetValue("UninstallString", $"\"{InstalledExePath}\" --uninstall");
+            key.SetValue("QuietUninstallString", $"\"{InstalledExePath}\" --uninstall --quiet");
+            key.SetValue("NoModify", 1, RegistryValueKind.DWord);
+            key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
             try
             {
-                string? path = proc.MainModule?.FileName;
-                if (path != null && string.Equals(Normalize(path), target, StringComparison.OrdinalIgnoreCase))
+                long bytes = new FileInfo(InstalledExePath).Length;
+                key.SetValue("EstimatedSize", (int)(bytes / 1024), RegistryValueKind.DWord);
+            }
+            catch
+            {
+                // size is cosmetic
+            }
+        }
+        catch
+        {
+            // registration is best effort
+        }
+    }
+
+    private static void RemoveUninstallEntry()
+    {
+        try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false); } catch { }
+    }
+
+    /// <summary>Kills every Agentower / remote-bot process except this one.</summary>
+    private static void StopRunningInstances()
+    {
+        int self = Environment.ProcessId;
+        foreach (string name in new[] { "Agentower", "remote-bot" })
+        {
+            foreach (Process proc in Process.GetProcessesByName(name))
+            {
+                if (proc.Id == self)
+                    continue;
+                try
                 {
                     proc.Kill(entireProcessTree: true);
                     proc.WaitForExit(3000);
                 }
+                catch
+                {
+                    // already exited or inaccessible
+                }
+                finally
+                {
+                    proc.Dispose();
+                }
             }
-            catch
+        }
+    }
+
+    /// <summary>
+    /// Deletes the given directories with a detached cmd that waits a couple
+    /// of seconds, so this (running) process can exit before its own exe is
+    /// removed.
+    /// </summary>
+    private static void ScheduleRemoval(IEnumerable<string> directories)
+    {
+        var parts = new List<string> { "ping -n 4 127.0.0.1 >nul" };
+        foreach (string dir in directories)
+        {
+            if (!string.IsNullOrWhiteSpace(dir))
+                parts.Add($"rmdir /s /q \"{dir}\" 2>nul");
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo("cmd.exe", "/c " + string.Join(" & ", parts))
             {
-                // process may have exited or be inaccessible; ignore
-            }
-            finally
-            {
-                proc.Dispose();
-            }
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            });
+        }
+        catch
+        {
+            // best effort
         }
     }
 

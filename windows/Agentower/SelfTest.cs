@@ -32,6 +32,14 @@ internal static class SelfTest
             }
             lines.Add("settingsform.ok");
 
+            using (var installForm = new InstallForm(false))
+            {
+                installForm.Show();
+                Application.DoEvents();
+                installForm.Hide();
+            }
+            lines.Add("installform.ok");
+
             using (var bot = new BotController())
             using (var idle = new IdleNotifier((_, _) => { }))
             using (var popover = new PopoverForm(

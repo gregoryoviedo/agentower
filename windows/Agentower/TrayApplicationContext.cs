@@ -38,6 +38,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var installItem = new ToolStripMenuItem("Instalar en el sistema…");
         installItem.Click += (_, _) => InstallToSystem();
         installItem.Visible = !Installer.IsInstalled;
+        var uninstallItem = new ToolStripMenuItem("Desinstalar Agentower…");
+        uninstallItem.Click += (_, _) => UninstallFromSystem();
+        uninstallItem.Visible = Installer.IsInstalled;
         var quitItem = new ToolStripMenuItem("Salir de Agentower");
         quitItem.Click += (_, _) => Quit();
 
@@ -47,6 +50,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(settingsItem);
         _menu.Items.Add(logItem);
         _menu.Items.Add(installItem);
+        _menu.Items.Add(uninstallItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(quitItem);
 
@@ -187,6 +191,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // Hand over to the installed copy; this instance releases the
         // single-instance mutex on exit and the new one picks it up.
         Installer.StartInstalled();
+        Quit();
+    }
+
+    private void UninstallFromSystem()
+    {
+        if (!Installer.Uninstall(quiet: false)) return;
+        // Uninstall stops the bot and schedules the file removal; quitting
+        // lets the detached cleanup delete the installed exe.
         Quit();
     }
 
