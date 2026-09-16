@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,17 @@ import (
 	"github.com/gregoryoviedo/agentower/internal/domain"
 	"github.com/gregoryoviedo/agentower/internal/usecase"
 )
+
+// stubLocator returns a fixed active session for the /continue
+// directory-resolution test.
+type stubLocator struct {
+	kind   domain.AgentKind
+	active domain.ActiveSession
+}
+
+func (s stubLocator) Kind() domain.AgentKind { return s.kind }
+
+func (s stubLocator) Locate(context.Context) (domain.ActiveSession, error) { return s.active, nil }
 
 // TestHandlerContinueAndDiffCallbacks makes sure the quick-tap buttons on
 // the asynchronous "task done" notification resolve to /continue and
@@ -76,5 +89,54 @@ func TestHandlerContinueAndDiffCallbacks(t *testing.T) {
 	}
 	if state.SessionID != "ses1" {
 		t.Fatalf("SessionID after /continue = %q, want ses1", state.SessionID)
+	}
+}
+
+// TestContinueResolvesDirectoryFromLocator covers the case where the
+// stored completion snapshot has no directory because the agent's server
+// was stopped when the watcher recorded it (Kiro/opencode). /continue
+// must fall back to the locator's on-disk session directory so the agent
+// restarts in the right project.
+func TestContinueResolvesDirectoryFromLocator(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "proj")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	defer store.Close()
+	client, _ := agents_opencode.NewClient("http://127.0.0.1:1", &http.Client{Timeout: time.Millisecond})
+
+	handler := usecase.NewHandler(store, &fakeRegistry{client: client}, &fakeServer{started: true}, root)
+	handler.SetSessionEventLog(store)
+	locators := usecase.NewActiveLocatorRegistry()
+	locators.Add(stubLocator{kind: domain.AgentKiro, active: domain.ActiveSession{
+		Kind:      domain.AgentKiro,
+		SessionID: "sess_1",
+		Directory: project,
+	}})
+	handler.SetActiveLocators(locators)
+
+	const chatID = 42
+	if err := store.SaveCompletedSession(context.Background(), domain.CompletedSession{
+		ChatID:      chatID,
+		SessionID:   "sess_1",
+		AgentKind:   domain.AgentKiro,
+		Preview:     "listo",
+		CompletedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := handler.HandleCommand(context.Background(), chatID, "/continue", nil); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	state, err := store.LoadRuntimeState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.RelativePath != "proj" || state.AgentKind != domain.AgentKiro {
+		t.Fatalf("state = %+v, want RelativePath=proj AgentKind=kiro", state)
 	}
 }

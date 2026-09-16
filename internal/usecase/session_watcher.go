@@ -239,12 +239,14 @@ func (w *SessionWatcher) tick(ctx context.Context) error {
 	if chatID == 0 {
 		return nil
 	}
+	var located domain.ActiveSession
 	if ideLocator != nil {
 		as, err := ideLocator.Locate(ctx)
 		if err != nil || as.SessionID == "" {
 			// No session the user is driving right now.
 			return nil
 		}
+		located = as
 		if as.SessionID != sessionID {
 			if !w.ideSessionIsFresh(as) {
 				// The locator is reporting a session the user left
@@ -329,7 +331,7 @@ func (w *SessionWatcher) tick(ctx context.Context) error {
 	if !lastMessageIsFinal(messages) {
 		return nil
 	}
-	if err := w.persistCompletion(ctx, chatID, kind, sessionID, messages, adapter); err != nil {
+	if err := w.persistCompletion(ctx, chatID, kind, sessionID, messages, adapter, located); err != nil {
 		return err
 	}
 	w.mu.Lock()
@@ -399,7 +401,7 @@ func agentStreams(kind domain.AgentKind) bool {
 	return true
 }
 
-func (w *SessionWatcher) persistCompletion(ctx context.Context, chatID int64, kind domain.AgentKind, sessionID string, messages []domain.Message, adapter domain.AgentAdapter) error {
+func (w *SessionWatcher) persistCompletion(ctx context.Context, chatID int64, kind domain.AgentKind, sessionID string, messages []domain.Message, adapter domain.AgentAdapter, located domain.ActiveSession) error {
 	snapshot := domain.CompletedSession{
 		ChatID:      chatID,
 		SessionID:   sessionID,
@@ -407,13 +409,26 @@ func (w *SessionWatcher) persistCompletion(ctx context.Context, chatID int64, ki
 		Preview:     previewFromMessages(messages, w.previewSize),
 		CompletedAt: w.now().UTC(),
 	}
+	// The locator already knows the project the user is working in, and
+	// unlike ListSessions it works while the agent's server/subprocess is
+	// stopped. Use it as the primary source so the completion snapshot
+	// carries a usable directory even before the agent is started.
+	if located.SessionID == sessionID && located.Directory != "" {
+		snapshot.Directory = located.Directory
+		snapshot.ProjectName = projectNameFromPath(located.Directory)
+		snapshot.Title = located.Title
+	}
 	if sessions, err := adapter.ListSessions(ctx); err == nil {
 		for _, s := range sessions {
 			if s.ID == sessionID {
-				snapshot.Title = s.Title
+				if snapshot.Title == "" {
+					snapshot.Title = s.Title
+				}
 				snapshot.ProjectID = s.ProjectID
-				snapshot.Directory = s.Directory
-				snapshot.ProjectName = projectNameFromPath(s.Directory)
+				if snapshot.Directory == "" {
+					snapshot.Directory = s.Directory
+					snapshot.ProjectName = projectNameFromPath(s.Directory)
+				}
 				break
 			}
 		}

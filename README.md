@@ -215,24 +215,27 @@ Puertos reservados por agente (cada uno override-able por env):
 | codex     | 4101               |
 | antigravity | 4102             |
 
-### Auto-arranque del servidor
+### Auto-arranque de los agentes
 
-Por defecto Agentower **no** arranca los servidores de los agentes. La
-idea es que los abras tú, en tu terminal o IDE (`opencode serve`, Kiro,
-Claude Code, etc.): el bot se limita a seguir sus sesiones. Esto también
-evita que el puerto de un agente quede atado a una carpeta que no elegiste.
+Agentower arranca los agentes **de forma perezosa**: no lanza nada al
+inicio. Mientras no le escribas, el bot se limita a seguir las sesiones
+leyendo su historial en disco (para opencode, directamente su base SQLite
+`~/.local/share/opencode/opencode.db`, así que sigue tanto la TUI local
+como `opencode serve`). Cuando envías texto libre, tocás **▶️ Continuar
+sesión** o usás `/continue` por primera vez sobre una sesión, el bot
+arranca el agente en la carpeta de ese proyecto (la que reporta el
+locator) y recién ahí le manda el prompt.
 
-Para opencode, el observador lee directamente su base SQLite
-(`~/.local/share/opencode/opencode.db`), así que sigue tanto la TUI local
-como `opencode serve` sin necesidad de puerto. El servidor HTTP solo hace
-falta para **enviar** prompts desde Telegram (texto libre o `/continue`);
-si no está corriendo, la lectura de historial y la detección de
-completados siguen funcionando igual. Si lo quieres igual, puedes fijar el
-puerto con `opencode serve --port 4096` o `opencode --port 4096`.
+Para opencode, si ya tenés un `opencode serve` corriendo lo **adopta** en
+vez de levantar un segundo servidor; si no hay ninguno, lanza
+`opencode serve --port 4096` en el directorio del proyecto. Los agentes
+stdio (Claude Code, Kiro, Copilot, Codex, Antigravity) lanzan su
+subproceso la primera vez que reciben un prompt a través del bot.
 
 El bot apaga los subprocesos que sí haya arrancado él cuando recibe
 `Ctrl+C` o una señal de terminación: con `SIGTERM`/`SIGKILL` en
-macOS/Linux, y con `taskkill /T /F` del árbol de procesos en Windows.
+macOS/Linux, y con `taskkill /T /F` del árbol de procesos en Windows. Un
+`opencode serve` adoptado (arrancado por vos) nunca se mata.
 
 ## Comandos
 

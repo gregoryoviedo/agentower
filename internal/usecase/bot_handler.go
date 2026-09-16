@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -34,6 +35,7 @@ type Handler struct {
 	workspaceRoot string
 	staleAfter    time.Duration
 	now           func() time.Time
+	startMu       sync.Mutex
 }
 
 // SessionController is the surface Handler needs from the SessionWatcher.
@@ -182,6 +184,10 @@ func (h *Handler) HandleText(ctx context.Context, chatID int64, text string) (do
 		return agentUnavailableResponse(err), nil
 	}
 	stopTyping := h.startTypingIndicator(chatID)
+	if err := h.ensureAgentStarted(ctx, kind, state); err != nil {
+		stopTyping()
+		return domain.BotResponse{Text: startAgentError(kind, err)}, nil
+	}
 	reply, err := adapter.SendPrompt(ctx, state.SessionID, text)
 	stopTyping()
 	if h.watcher != nil {
@@ -213,6 +219,77 @@ func (h *Handler) adapterForSession(chatID int64, kind domain.AgentKind) (domain
 		return adapter, kind, nil
 	}
 	return h.activeAdapter(chatID)
+}
+
+// ensureAgentStarted makes sure the agent's subprocess (HTTP server for
+// opencode, stdio CLI for the rest) is running before the handler tries
+// to send a prompt. The managers are lazy: nothing starts them at boot,
+// so the first message a user sends after reactivating a session is what
+// brings the agent up in the project directory persisted with the
+// session. opencode adopts an already-running `opencode serve` when one
+// exists instead of spawning a second server.
+func (h *Handler) ensureAgentStarted(ctx context.Context, kind domain.AgentKind, state domain.RuntimeState) error {
+	if h.manager == nil || kind == "" {
+		return nil
+	}
+	// Serialize starts so two near-simultaneous messages do not race to
+	// spawn (or restart) the same agent.
+	h.startMu.Lock()
+	defer h.startMu.Unlock()
+	if h.manager.StartedSubprocess(kind) {
+		return nil
+	}
+	workdir := h.resolveWorkingDir(state)
+	if workdir == "" {
+		return domain.ErrAgentUnavailable
+	}
+	return h.manager.Start(ctx, kind, workdir)
+}
+
+// resolveWorkingDir picks the directory the agent should run in. It
+// prefers the session's project (workspace root + relative path) and
+// falls back to the workspace root when the path is empty or no longer
+// exists.
+func (h *Handler) resolveWorkingDir(state domain.RuntimeState) string {
+	root := state.WorkspaceRoot
+	if root == "" {
+		root = h.workspaceRoot
+	}
+	if root == "" {
+		return ""
+	}
+	if state.RelativePath != "" {
+		candidate := filepath.Join(root, state.RelativePath)
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return root
+}
+
+// directoryForSession asks the locator registered for the kind for the
+// directory of a specific session. It is best-effort: a missing locator,
+// a transient error or a different freshest session all yield "".
+func (h *Handler) directoryForSession(ctx context.Context, kind domain.AgentKind, sessionID string) string {
+	if h.locators == nil || kind == "" || sessionID == "" {
+		return ""
+	}
+	loc, ok := h.locators.LocatorFor(kind)
+	if !ok {
+		return ""
+	}
+	active, err := loc.Locate(ctx)
+	if err != nil || active.SessionID != sessionID {
+		return ""
+	}
+	return active.Directory
+}
+
+func startAgentError(kind domain.AgentKind, err error) string {
+	if errors.Is(err, domain.ErrAgentUnavailable) {
+		return fmt.Sprintf("No pude iniciar %s: no encontré un directorio de proyecto válido para esa sesión.", kind)
+	}
+	return fmt.Sprintf("No pude iniciar %s: %s", kind, err)
 }
 
 // startTypingIndicator fires a "typing…" chat action now and keeps
@@ -436,6 +513,11 @@ func (h *Handler) submitAnswers(ctx context.Context, chatID int64, pending domai
 	qa, ok := adapter.(domain.QuestionAdapter)
 	if !ok {
 		return domain.BotResponse{Text: "Ese agente no admite respuestas a preguntas.", Edit: true}, nil
+	}
+	if state, err := h.state.LoadRuntimeState(ctx); err == nil {
+		if startErr := h.ensureAgentStarted(ctx, kind, state); startErr != nil {
+			return domain.BotResponse{Text: startAgentError(kind, startErr), Edit: true}, nil
+		}
 	}
 	if err := qa.ReplyQuestion(ctx, pending.SessionID, pending.RequestID, pending.Answers); err != nil {
 		return domain.BotResponse{Text: "No pude enviar tus respuestas al agente: " + err.Error(), Edit: true}, nil
@@ -689,9 +771,18 @@ func (h *Handler) continueLast(ctx context.Context, chatID int64) (domain.BotRes
 	if snapshot.ProjectID != "" {
 		state.ProjectID = snapshot.ProjectID
 	}
-	if snapshot.Directory != "" {
+	directory := snapshot.Directory
+	if directory == "" {
+		// The opencode/Kiro adapters cannot always list sessions while
+		// their manager is stopped (opencode needs the HTTP server, Kiro
+		// needs the ACP subprocess), so the stored snapshot may lack the
+		// directory. Ask the locator — which reads on-disk state — so the
+		// agent is restarted in the right project.
+		directory = h.directoryForSession(ctx, state.AgentKind, snapshot.SessionID)
+	}
+	if directory != "" {
 		state.WorkspaceRoot = h.workspaceRoot
-		state.RelativePath = relativeUnderWorkspace(h.workspaceRoot, snapshot.Directory)
+		state.RelativePath = relativeUnderWorkspace(h.workspaceRoot, directory)
 	}
 	if err := h.state.SaveRuntimeState(ctx, state); err != nil {
 		return domain.BotResponse{}, err

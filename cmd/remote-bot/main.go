@@ -259,8 +259,8 @@ func main() {
 	}
 	serverManager := agents.NewMultiServerManager(serverOpts)
 
-	logger.Info("opencode server autostart disabled; run `opencode serve` to let the bot follow its sessions",
-		"port", agents.DefaultOpenCodePort)
+	logger.Info("agent subprocesses are lazy: they start on the first prompt (or /continue) and are adopted/followed via their on-disk history in between",
+		"opencode_port", agents.DefaultOpenCodePort)
 	defer serverManager.StopAll()
 
 	handler := usecase.NewHandler(repository, registry, serverManager, cfg.WorkspaceRoot)

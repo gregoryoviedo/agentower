@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -182,6 +183,50 @@ func TestFreeTextUsesTheSessionsAgentNotTheDefault(t *testing.T) {
 	}
 	if !strings.Contains(resp.Text, "ok") {
 		t.Fatalf("HandleText text = %q, want the reply from the session's agent", resp.Text)
+	}
+}
+
+// TestHandleTextStartsTheAgentOnFirstPrompt guards the lazy autostart:
+// the manager is never started at boot, so the first free-text message
+// after reactivating a session must bring the agent up in the session's
+// project directory before forwarding the prompt.
+func TestHandleTextStartsTheAgentOnFirstPrompt(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "proj")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	opencodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost {
+			fmt.Fprint(w, `{"info":{"id":"m1","role":"assistant"},"parts":[{"type":"text","text":"ok"}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer opencodeServer.Close()
+
+	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	defer store.Close()
+	client, _ := agents_opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
+
+	server := &fakeServer{}
+	handler := usecase.NewHandler(store, &fakeRegistry{client: client}, server, root)
+	ctx := context.Background()
+	if err := store.SaveRuntimeState(ctx, domain.RuntimeState{WorkspaceRoot: root, RelativePath: "proj", SessionID: "ses_1", AgentKind: domain.AgentOpenCode}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := handler.HandleText(ctx, 42, "hola")
+	if err != nil {
+		t.Fatalf("HandleText err=%v", err)
+	}
+	if !strings.Contains(resp.Text, "ok") {
+		t.Fatalf("HandleText text = %q, want the agent reply", resp.Text)
+	}
+	if !server.started || server.cwd != project {
+		t.Fatalf("manager started=%v cwd=%q, want it started in %q", server.started, server.cwd, project)
 	}
 }
 
