@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +92,21 @@ func TestAdapterCreateSessionIsSynthetic(t *testing.T) {
 	}
 	if !isSynthetic(s.ID) {
 		t.Fatalf("expected synthetic id, got %q", s.ID)
+	}
+}
+
+// TestBuildArgvResumeUsesThreadID pins the resume contract: the locator
+// reads the real thread id from the rollout session_meta, and the
+// manager must pass that same id to `codex exec resume`.
+func TestBuildArgvResumeUsesThreadID(t *testing.T) {
+	argv := buildArgv("codex", DefaultExecArgs, "thread-abc")
+	if argv[0] != "codex" || argv[1] != "exec" || argv[2] != "resume" {
+		t.Fatalf("argv prefix = %v, want codex exec resume", argv[:3])
+	}
+	if len(argv) < 2 || argv[len(argv)-2] != "thread-abc" || argv[len(argv)-1] != "-" {
+		t.Fatalf("argv tail = %v, want <thread-abc> -", argv)
+	}
+	if !strings.Contains(strings.Join(argv, " "), "--json") {
+		t.Fatalf("argv = %v, want the exec flags preserved", argv)
 	}
 }
