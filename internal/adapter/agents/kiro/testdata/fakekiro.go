@@ -1,7 +1,8 @@
 // fakekiro simulates the Kiro CLI's ACP server (kiro-cli acp) for
 // adapter tests. It speaks newline-delimited JSON-RPC 2.0: initialize,
-// session/new, session/resume and session/prompt, streaming one
-// agent_message_chunk before answering the prompt.
+// session/new, session/load (replaying one notification), session/prompt
+// (streaming one agent_message_chunk) and session/request_permission.
+// Like Kiro CLI 2.x, it does NOT implement session/resume.
 package main
 
 import (
@@ -47,7 +48,8 @@ func main() {
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]any{"sessionId": "sess_" + randHex()},
 			})
-		case "session/resume":
+		case "session/load":
+			replyLoad(m.Params, send)
 			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}})
 		case "session/prompt":
 			replyPrompt(m.Params, send)
@@ -87,6 +89,29 @@ func replyPrompt(params json.RawMessage, send func(map[string]any)) {
 				"content": map[string]any{
 					"content": map[string]any{
 						"content": map[string]any{"type": "text", "text": "fakekiro reply: " + text},
+					},
+				},
+			},
+		},
+	})
+}
+
+// replyLoad replays one history notification, mirroring session/load.
+func replyLoad(params json.RawMessage, send func(map[string]any)) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+	}
+	_ = json.Unmarshal(params, &p)
+	send(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "session/update",
+		"params": map[string]any{
+			"sessionId": p.SessionID,
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content": map[string]any{
+					"content": map[string]any{
+						"content": map[string]any{"type": "text", "text": "replayed history"},
 					},
 				},
 			},

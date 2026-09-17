@@ -35,15 +35,21 @@ type Agent struct {
 	started bool
 	caps    *Capabilities
 
-	mu   sync.Mutex
-	text map[string]*strings.Builder
+	mu      sync.Mutex
+	text    map[string]*strings.Builder
+	loading map[string]bool
 }
 
 // Capabilities is the initialize result surface AgenTower inspects.
 type Capabilities struct {
 	ProtocolVersion   int `json:"protocolVersion"`
 	AgentCapabilities struct {
-		LoadSession bool `json:"loadSession"`
+		LoadSession         bool `json:"loadSession"`
+		SessionCapabilities struct {
+			// Resume is non-nil when the agent advertises the
+			// session/resume capability (restore without replaying).
+			Resume *struct{} `json:"resume"`
+		} `json:"sessionCapabilities"`
 	} `json:"agentCapabilities"`
 	AgentInfo struct {
 		Name    string `json:"name"`
@@ -62,7 +68,11 @@ type SessionInfo struct {
 
 // NewAgent builds an agent without starting it.
 func NewAgent(opts AgentOptions) *Agent {
-	return &Agent{opts: opts, text: map[string]*strings.Builder{}}
+	return &Agent{
+		opts:    opts,
+		text:    map[string]*strings.Builder{},
+		loading: map[string]bool{},
+	}
 }
 
 // Start spawns the subprocess and completes the ACP handshake.
@@ -76,19 +86,21 @@ func (a *Agent) Start(ctx context.Context) error {
 		Framing: a.opts.Framing,
 		Stderr:  a.opts.Stderr,
 	})
+	// Install the dispatcher before the read loop starts so no
+	// notification can be missed. Tokens/requests are handled inline by
+	// the read loop, which keeps notification processing ordered with
+	// respect to request responses (needed by session/load replay).
+	cli.SetNotifyHandler(func(msg *message) {
+		if len(msg.ID) > 0 && string(msg.ID) != "null" && msg.Method != "" {
+			a.handleRequest(msg)
+			return
+		}
+		a.onNotify(msg)
+	})
 	if err := cli.Start(); err != nil {
 		return err
 	}
 	a.cli = cli
-	go func() {
-		for msg := range cli.NotifyHandler() {
-			if len(msg.ID) > 0 && string(msg.ID) != "null" && msg.Method != "" {
-				a.handleRequest(msg)
-				continue
-			}
-			a.onNotify(msg)
-		}
-	}()
 	initParams := map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{
@@ -137,13 +149,63 @@ func (a *Agent) NewSession(ctx context.Context, cwd string) (string, error) {
 }
 
 // ResumeSession reactivates an existing session (the "continue from
-// Telegram" path).
+// Telegram" path). ACP split this into two methods:
+//
+//   - session/resume (capability agentCapabilities.sessionCapabilities.resume):
+//     restores the session context without replaying history.
+//   - session/load (capability agentCapabilities.loadSession): restores
+//     the context and replays the full conversation as session/update
+//     notifications before responding.
+//
+// Agent versions differ in which one they implement (Kiro CLI 2.x only
+// answers session/load), so we prefer the advertised method and fall
+// back to the other only on JSON-RPC "method not found" (-32601).
 func (a *Agent) ResumeSession(ctx context.Context, sessionID, cwd string) error {
-	return a.cli.Request(ctx, "session/resume", map[string]any{
+	params := map[string]any{
 		"sessionId":  sessionID,
 		"cwd":        cwd,
 		"mcpServers": []any{},
-	}, nil)
+	}
+	methods := []string{"session/load", "session/resume"}
+	if a.caps != nil && a.caps.AgentCapabilities.SessionCapabilities.Resume != nil {
+		methods = []string{"session/resume", "session/load"}
+	}
+	// session/load replays the conversation as notifications. Drop them
+	// while it runs: Prompt resets the per-session buffer anyway, and
+	// skipping keeps the replay out of memory.
+	a.mu.Lock()
+	a.loading[sessionID] = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.loading, sessionID)
+		a.mu.Unlock()
+	}()
+
+	var firstErr error
+	for _, method := range methods {
+		err := a.cli.Request(ctx, method, params, nil)
+		if err == nil {
+			return nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if !methodNotFound(err) {
+			return err
+		}
+	}
+	return firstErr
+}
+
+// methodNotFound reports whether err is the JSON-RPC -32601 error, used
+// to fall back across ACP method-name revisions.
+func methodNotFound(err error) bool {
+	var rpc *rpcError
+	if errors.As(err, &rpc) {
+		return rpc.Code == -32601
+	}
+	return false
 }
 
 // Prompt sends a user message to the session and returns the agent's
@@ -261,9 +323,20 @@ func (a *Agent) onNotify(msg *message) {
 	if params.Update.SessionUpdate != "" && params.Update.SessionUpdate != "agent_message_chunk" {
 		return
 	}
+	if a.isLoading(params.SessionID) {
+		// session/load history replay; Prompt resets the buffer before
+		// the real turn, so there is nothing to aggregate.
+		return
+	}
 	for _, t := range collectText(params.Update.Content) {
 		a.appendText(params.SessionID, t)
 	}
+}
+
+func (a *Agent) isLoading(sessionID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.loading[sessionID]
 }
 
 func (a *Agent) resetText(sessionID string) {

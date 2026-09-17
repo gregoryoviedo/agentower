@@ -128,7 +128,8 @@ Adapters that implement the ports and depend on real-world libraries.
 - `adapter/agents/kiro`: ACP client over
   `kiro-cli acp --agent-engine v3 --auth-method cli` (newline framing)
   with `TrustAll: true` (permission requests auto-approved). Sessions can
-  be created or resumed (`session/resume`); history is read from the
+  be created or resumed (`session/load`, falling back to `session/resume`
+  for agents that advertise it); history is read from the
   JSONL store at `~/.kiro/sessions/<ws>/<id>/messages.jsonl`.
 - `adapter/agents/copilot`: real LSP client (Content-Length framed
   JSON-RPC 2.0). Spawns the modern `copilot` CLI when present, or a

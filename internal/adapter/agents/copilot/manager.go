@@ -118,6 +118,9 @@ func (m *Manager) ensureAgent(ctx context.Context) (*acp.Agent, error) {
 		return nil, fmt.Errorf("start copilot acp: %w", err)
 	}
 	m.agent = agent
+	// A fresh subprocess does not know the sessions the previous one had
+	// loaded, so forget them and let SendPrompt resume again.
+	m.known = map[string]bool{}
 	return agent, nil
 }
 

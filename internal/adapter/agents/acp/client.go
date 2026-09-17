@@ -68,13 +68,14 @@ type Client struct {
 	framing Framing
 	stderr  io.Writer
 
-	mu      sync.Mutex
-	nextID  int64
-	pending map[string]chan *message
-	closed  bool
-	readErr error
-	notify  chan *message
-	done    chan struct{}
+	mu       sync.Mutex
+	nextID   int64
+	pending  map[string]chan *message
+	closed   bool
+	readErr  error
+	notify   chan *message
+	notifyFn func(*message)
+	done     chan struct{}
 }
 
 // ClientOptions configures a Client.
@@ -156,14 +157,8 @@ func (c *Client) readLoop() {
 		}
 		if len(msg.ID) > 0 && string(msg.ID) != "null" {
 			if msg.Method != "" {
-				// Agent request: handled synchronously by the
-				// dispatching side of the loop below; for now
-				// forward it on the notify channel tagged.
-				c.mu.Lock()
-				if !c.closed {
-					c.notify <- msg
-				}
-				c.mu.Unlock()
+				// Agent request (e.g. session/request_permission).
+				c.dispatch(msg)
 				continue
 			}
 			// Response to one of our requests.
@@ -180,12 +175,34 @@ func (c *Client) readLoop() {
 			continue
 		}
 		// Notification (no id).
-		c.mu.Lock()
-		if !c.closed {
-			c.notify <- msg
-		}
-		c.mu.Unlock()
+		c.dispatch(msg)
 	}
+}
+
+// dispatch delivers a notification or agent request. When a synchronous
+// handler is installed with SetNotifyHandler it runs inline, before the
+// read loop parses the next message. That guarantees the handler has
+// fully processed every notification the agent emitted before a request
+// response — essential for session/load, whose history replay arrives as
+// notifications immediately before the response. Otherwise the message
+// goes to the NotifyHandler channel for asynchronous consumption.
+func (c *Client) dispatch(msg *message) {
+	c.mu.Lock()
+	fn := c.notifyFn
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return
+	}
+	if fn != nil {
+		fn(msg)
+		return
+	}
+	c.mu.Lock()
+	if !c.closed {
+		c.notify <- msg
+	}
+	c.mu.Unlock()
 }
 
 // Request sends a request and waits for the matching response,
@@ -251,6 +268,18 @@ func (c *Client) Respond(id json.RawMessage, result any, err error) error {
 // NotifyHandler returns the channel the read loop pushes notifications
 // and agent requests to. It is closed when the client closes.
 func (c *Client) NotifyHandler() <-chan *message { return c.notify }
+
+// SetNotifyHandler installs a synchronous handler for notifications and
+// agent requests. When set, the read loop invokes it inline instead of
+// pushing to the NotifyHandler channel, so every notification is fully
+// processed before the next message (including request responses) is
+// handled. The handler MUST NOT call Request: that would deadlock the
+// read loop waiting for a response it cannot read.
+func (c *Client) SetNotifyHandler(fn func(*message)) {
+	c.mu.Lock()
+	c.notifyFn = fn
+	c.mu.Unlock()
+}
 
 // Done is closed when the read loop exits.
 func (c *Client) Done() <-chan struct{} { return c.done }

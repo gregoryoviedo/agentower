@@ -81,8 +81,64 @@ func TestAgentResumeThenPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	if reply == "" {
-		t.Fatal("empty reply after resume+prompt")
+	if !strings.Contains(reply, "fakeacp reply") {
+		t.Fatalf("reply = %q, want fakeacp reply", reply)
+	}
+	// session/load replays history as notifications; the replay must not
+	// leak into the first prompt's reply.
+	if strings.Contains(reply, "replayed history") {
+		t.Fatalf("reply = %q, leaked replayed history", reply)
+	}
+}
+
+// TestAgentResumePrefersAdvertisedResume checks that an agent advertising
+// the session/resume capability is resumed with session/resume (no replay).
+func TestAgentResumePrefersAdvertisedResume(t *testing.T) {
+	t.Setenv("FAKEACP_ADVERTISE_RESUME", "1")
+	a := NewAgent(AgentOptions{Bin: buildFakeACP(t), Framing: FramingNewline, TrustAll: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer a.Close()
+	if a.Capabilities().AgentCapabilities.SessionCapabilities.Resume == nil {
+		t.Fatal("sessionCapabilities.resume not negotiated")
+	}
+	if err := a.ResumeSession(ctx, "existing-1", t.TempDir()); err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+	reply, err := a.Prompt(ctx, "existing-1", "hola")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if !strings.Contains(reply, "fakeacp reply") {
+		t.Fatalf("reply = %q, want fakeacp reply", reply)
+	}
+}
+
+// TestAgentResumeFallsBackOnMethodNotFound mimics Kiro CLI 2.x: it
+// advertises session/resume but answers -32601, so the client must fall
+// back to session/load.
+func TestAgentResumeFallsBackOnMethodNotFound(t *testing.T) {
+	t.Setenv("FAKEACP_ADVERTISE_RESUME", "1")
+	t.Setenv("FAKEACP_NO_RESUME", "1")
+	a := NewAgent(AgentOptions{Bin: buildFakeACP(t), Framing: FramingNewline, TrustAll: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer a.Close()
+	if err := a.ResumeSession(ctx, "existing-1", t.TempDir()); err != nil {
+		t.Fatalf("ResumeSession should fall back to session/load: %v", err)
+	}
+	reply, err := a.Prompt(ctx, "existing-1", "hola")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if !strings.Contains(reply, "fakeacp reply") || strings.Contains(reply, "replayed history") {
+		t.Fatalf("reply = %q, want the prompt reply without replay", reply)
 	}
 }
 

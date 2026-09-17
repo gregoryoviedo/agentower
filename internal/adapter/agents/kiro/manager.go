@@ -2,7 +2,7 @@
 // the Agent Client Protocol (ACP). Kiro exposes an ACP server via
 // `kiro-cli acp --agent-engine v3 --auth-method cli`, which lets
 // Agentower create, resume and drive Kiro sessions from Telegram —
-// including chats the user started in the Kiro IDE (session/resume).
+// including chats the user started in the Kiro IDE (session/load).
 package kiro
 
 import (
@@ -98,6 +98,9 @@ func (m *Manager) ensureAgent(ctx context.Context) (*acp.Agent, error) {
 		return nil, fmt.Errorf("start kiro acp: %w", err)
 	}
 	m.agent = agent
+	// A fresh subprocess does not know the sessions the previous one had
+	// loaded, so forget them and let SendPrompt resume again.
+	m.known = map[string]bool{}
 	return agent, nil
 }
 

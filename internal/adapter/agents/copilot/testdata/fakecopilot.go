@@ -1,7 +1,7 @@
 // fakecopilot simulates the Copilot CLI's ACP server (copilot --acp)
 // for adapter tests. It speaks newline-delimited JSON-RPC 2.0:
-// initialize, session/new, session/resume and session/prompt, streaming
-// one agent_message_chunk before answering the prompt.
+// initialize, session/new, session/load (replaying one notification) and
+// session/prompt, streaming one agent_message_chunk before answering.
 package main
 
 import (
@@ -47,7 +47,8 @@ func main() {
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]any{"sessionId": "sess_" + randHex()},
 			})
-		case "session/resume":
+		case "session/load":
+			replyLoad(m.Params, send)
 			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}})
 		case "session/prompt":
 			replyPrompt(m.Params, send)
@@ -80,6 +81,29 @@ func replyPrompt(params json.RawMessage, send func(map[string]any)) {
 				"content": map[string]any{
 					"content": map[string]any{
 						"content": map[string]any{"type": "text", "text": "fakecopilot reply"},
+					},
+				},
+			},
+		},
+	})
+}
+
+// replyLoad replays one history notification, mirroring session/load.
+func replyLoad(params json.RawMessage, send func(map[string]any)) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+	}
+	_ = json.Unmarshal(params, &p)
+	send(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "session/update",
+		"params": map[string]any{
+			"sessionId": p.SessionID,
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content": map[string]any{
+					"content": map[string]any{
+						"content": map[string]any{"type": "text", "text": "replayed history"},
 					},
 				},
 			},

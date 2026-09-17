@@ -1,7 +1,12 @@
 // fakeacp simulates a minimal ACP agent for the acp package tests: it
 // speaks newline-delimited JSON-RPC and answers initialize,
-// session/new, session/resume, session/prompt (streaming one
-// agent_message_chunk) and session/request_permission.
+// session/new, session/load, session/resume, session/prompt (streaming
+// one agent_message_chunk) and session/request_permission.
+//
+// Env knobs used by the tests:
+//
+//	FAKEACP_ADVERTISE_RESUME=1  advertise sessionCapabilities.resume
+//	FAKEACP_NO_RESUME=1         answer session/resume with -32601
 package main
 
 import (
@@ -34,11 +39,15 @@ func main() {
 		id := m.ID
 		switch m.Method {
 		case "initialize":
+			agentCaps := map[string]any{"loadSession": true}
+			if os.Getenv("FAKEACP_ADVERTISE_RESUME") == "1" {
+				agentCaps["sessionCapabilities"] = map[string]any{"resume": map[string]any{}}
+			}
 			send(map[string]any{
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]any{
 					"protocolVersion":   1,
-					"agentCapabilities": map[string]any{"loadSession": true},
+					"agentCapabilities": agentCaps,
 					"agentInfo":         map[string]any{"name": "fakeacp", "version": "1.0"},
 				},
 			})
@@ -47,7 +56,17 @@ func main() {
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]any{"sessionId": "acp-session-1"},
 			})
+		case "session/load":
+			replayHistory(m.Params, send)
+			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}})
 		case "session/resume":
+			if os.Getenv("FAKEACP_NO_RESUME") == "1" {
+				send(map[string]any{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]any{"code": -32601, "message": "Method not found: session/resume"},
+				})
+				continue
+			}
 			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}})
 		case "session/request_permission":
 			send(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"outcome": "selected", "optionId": "allow"}})
@@ -75,6 +94,26 @@ func main() {
 			})
 		}
 	}
+}
+
+// replayHistory simulates session/load replaying the conversation as
+// agent_message_chunk notifications before it responds.
+func replayHistory(params json.RawMessage, send func(map[string]any)) {
+	send(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "session/update",
+		"params": map[string]any{
+			"sessionId": sessionIDOf(params),
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content": map[string]any{
+					"content": map[string]any{
+						"content": map[string]any{"type": "text", "text": "replayed history"},
+					},
+				},
+			},
+		},
+	})
 }
 
 func sessionIDOf(params json.RawMessage) string {
