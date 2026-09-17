@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -156,6 +157,18 @@ func TestAgentCloseTerminatesProcess(t *testing.T) {
 	a.Close()
 	if a.Running() {
 		t.Fatal("Running() = true after Close")
+	}
+}
+
+func TestResourceNotFound(t *testing.T) {
+	if !ResourceNotFound(&rpcError{Code: -32002, Message: "Resource not found"}) {
+		t.Fatal("expected -32002 to be reported as resource-not-found")
+	}
+	if ResourceNotFound(&rpcError{Code: -32601, Message: "Method not found"}) {
+		t.Fatal("-32601 must not be resource-not-found")
+	}
+	if ResourceNotFound(errors.New("boom")) {
+		t.Fatal("plain errors must not be resource-not-found")
 	}
 }
 

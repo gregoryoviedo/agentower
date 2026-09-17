@@ -208,6 +208,18 @@ func methodNotFound(err error) bool {
 	return false
 }
 
+// ResourceNotFound reports whether err is the JSON-RPC -32002 error.
+// Copilot returns it when asked to load a session it does not know
+// (e.g. a session created in VS Code, which uses a different store
+// than the Copilot CLI).
+func ResourceNotFound(err error) bool {
+	var rpc *rpcError
+	if errors.As(err, &rpc) {
+		return rpc.Code == -32002
+	}
+	return false
+}
+
 // Prompt sends a user message to the session and returns the agent's
 // full text reply (aggregated from session/update notifications).
 func (a *Agent) Prompt(ctx context.Context, sessionID, text string) (string, error) {

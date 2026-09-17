@@ -14,6 +14,7 @@ var (
 	ErrNoActiveAgent            = errors.New("no active agent for this chat")
 	ErrAgentUnavailable         = errors.New("agent is not available")
 	ErrAgentCapabilitiesLimited = errors.New("agent does not support this operation")
+	ErrSessionNotResumable      = errors.New("session was created on a surface the bot cannot resume")
 	ErrUnknownAgentKind         = errors.New("unknown agent kind")
 	ErrMigrationNotNeeded       = errors.New("no sessions need to be migrated")
 	ErrNoActiveSession          = errors.New("no active session for this agent")

@@ -200,6 +200,9 @@ func (h *Handler) HandleText(ctx context.Context, chatID int64, text string) (do
 		h.snapshot.SetActive(chatID, state.RelativePath, state.SessionID)
 	}
 	if err != nil {
+		if errors.Is(err, domain.ErrSessionNotResumable) {
+			return domain.BotResponse{Text: sessionNotResumableMessage(kind)}, nil
+		}
 		return domain.BotResponse{Text: fmt.Sprintf("%s no pudo responder: %s", kind, err.Error())}, nil
 	}
 	if reply == "" {
@@ -339,6 +342,21 @@ func sessionNoticeFor(kind domain.AgentKind) string {
 		}
 	}
 	return fmt.Sprintf("ℹ️ %s no refleja en vivo los mensajes que enviás desde Telegram. Para verlos ahí, reabrí o recargá la sesión.", surface)
+}
+
+// sessionNotResumableMessage explains, per agent, why a session the bot
+// discovered cannot be continued from Telegram. It happens when the
+// session was created on a surface whose store the agent's transport
+// cannot read (VS Code for Copilot, the IDE for Antigravity).
+func sessionNotResumableMessage(kind domain.AgentKind) string {
+	switch kind {
+	case domain.AgentCopilot:
+		return "No puedo retomar esta sesión de GitHub Copilot desde Telegram: se inició en VS Code/otro cliente y el bot solo puede continuar sesiones del Copilot CLI. Continuá ahí, o abrí la sesión con el CLI (`copilot`) y volvé a intentar."
+	case domain.AgentAntigravity:
+		return "No puedo retomar esta conversación de Antigravity desde Telegram: se inició en el IDE y el bot solo puede continuar conversaciones del Antigravity CLI. Continuá en el IDE, o usá `agy` en la terminal y volvé a intentar."
+	default:
+		return fmt.Sprintf("No puedo retomar esta sesión de %s desde Telegram: se inició en una interfaz que el bot no puede controlar. Continuá ahí o retomá la sesión desde su CLI.", kind)
+	}
 }
 
 // appendNotice adds the one-time session note to a reply, reserving room
@@ -585,6 +603,9 @@ func (h *Handler) submitAnswers(ctx context.Context, chatID int64, pending domai
 		}
 	}
 	if err := qa.ReplyQuestion(ctx, pending.SessionID, pending.RequestID, pending.Answers); err != nil {
+		if errors.Is(err, domain.ErrSessionNotResumable) {
+			return domain.BotResponse{Text: sessionNotResumableMessage(kind), Edit: true}, nil
+		}
 		return domain.BotResponse{Text: "No pude enviar tus respuestas al agente: " + err.Error(), Edit: true}, nil
 	}
 	h.questions.ClearPendingQuestion(chatID)
