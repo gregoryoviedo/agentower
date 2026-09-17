@@ -2,9 +2,12 @@ package antigravity
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gregoryoviedo/agentower/internal/domain"
 )
 
 // writeTranscript writes a transcript_full.jsonl for a conversation.
@@ -113,5 +116,73 @@ func TestAdapterCreateSessionIsSynthetic(t *testing.T) {
 	}
 	if !isSynthetic(s.ID) {
 		t.Fatalf("expected synthetic id, got %q", s.ID)
+	}
+}
+
+// TestLocatorTagsSourceByProductRoot makes sure the locator reports
+// whether the freshest conversation came from the CLI (resumable by
+// `agy`) or the IDE (read-only for the bot).
+func TestLocatorTagsSourceByProductRoot(t *testing.T) {
+	base := t.TempDir()
+	cli := filepath.Join(base, "antigravity-cli")
+	ide := filepath.Join(base, "antigravity")
+	writeHistory(t, cli, []string{
+		`{"display":"cli","timestamp":1000,"workspace":"/tmp/cli","conversationId":"conv-cli"}`,
+	})
+	writeHistory(t, ide, []string{
+		`{"display":"ide","timestamp":2000,"workspace":"/tmp/ide","conversationId":"conv-ide"}`,
+	})
+
+	loc, err := NewSessionLocator(SessionLocatorOptions{StateDir: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	as, err := loc.Locate(context.Background())
+	if err != nil {
+		t.Fatalf("Locate: %v", err)
+	}
+	if as.Source != "ide" {
+		t.Fatalf("source = %q, want ide", as.Source)
+	}
+}
+
+// TestAdapterRejectsIDESession guards the fail-fast path: a
+// conversation that only exists under the IDE root cannot be resumed by
+// `agy --conversation`, so SendPrompt must return the sentinel without
+// spawning the CLI.
+func TestAdapterRejectsIDESession(t *testing.T) {
+	base := t.TempDir()
+	ide := filepath.Join(base, "antigravity")
+	writeTranscript(t, ide, "conv-ide", []string{
+		`{"step_index":1,"type":"PLANNER_RESPONSE","source":"model","status":"DONE","content":"hola"}`,
+	})
+
+	mgr := NewManager("agy-does-not-exist", 4102)
+	mgr.MarkStarted(t.TempDir())
+	adapter := NewAdapter(mgr)
+	adapter.SetStateDir(base)
+
+	_, err := adapter.SendPrompt(context.Background(), "conv-ide", "hola")
+	if !errors.Is(err, domain.ErrSessionNotResumable) {
+		t.Fatalf("err = %v, want ErrSessionNotResumable", err)
+	}
+}
+
+// TestConversationInCLIIgnoresIDERoot checks the CLI-root probe used by
+// the resume guard.
+func TestConversationInCLIIgnoresIDERoot(t *testing.T) {
+	base := t.TempDir()
+	cli := filepath.Join(base, "antigravity-cli")
+	ide := filepath.Join(base, "antigravity")
+	writeTranscript(t, cli, "conv-cli", nil)
+	writeTranscript(t, ide, "conv-ide", nil)
+
+	adapter := NewAdapter(NewManager("agy", 4102))
+	adapter.SetStateDir(base)
+	if !adapter.conversationInCLI("conv-cli") {
+		t.Fatal("CLI conversation should be resumable")
+	}
+	if adapter.conversationInCLI("conv-ide") {
+		t.Fatal("IDE conversation must not be reported as resumable")
 	}
 }

@@ -72,7 +72,46 @@ func (a *Adapter) SendPrompt(ctx context.Context, sessionID, text string) (strin
 	if !a.manager.Started() {
 		return "", errors.New("antigravity manager not running")
 	}
+	// `agy --conversation` only reads the CLI root; a conversation the
+	// user ran in the Antigravity IDE lives under a different subtree and
+	// cannot be resumed from the bot. Fail fast with a clear sentinel.
+	if sessionID != "" && !isSynthetic(sessionID) && !a.conversationInCLI(sessionID) {
+		return "", fmt.Errorf("%w: antigravity conversation %s", domain.ErrSessionNotResumable, sessionID)
+	}
 	return a.manager.SendPrompt(ctx, sessionID, text)
+}
+
+// cliRoots returns the state roots the `agy` CLI can read, excluding the
+// IDE subtree.
+func (a *Adapter) cliRoots() []string {
+	base := strings.TrimSpace(a.stateDir)
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		return []string{filepath.Join(home, ".gemini", "antigravity-cli")}
+	}
+	switch filepath.Base(base) {
+	case "antigravity-cli":
+		return []string{base}
+	case "antigravity":
+		// Pointed at the IDE subtree: the CLI has nothing to resume here.
+		return nil
+	default:
+		return []string{filepath.Join(base, "antigravity-cli")}
+	}
+}
+
+// conversationInCLI reports whether the conversation exists under a CLI
+// root, which is the only place a backend resume can find it.
+func (a *Adapter) conversationInCLI(conversationID string) bool {
+	for _, root := range a.cliRoots() {
+		if info, err := os.Stat(filepath.Join(root, "brain", conversationID)); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // Revert is not supported by Antigravity headless mode today.

@@ -62,7 +62,10 @@ func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, erro
 		return domain.ActiveSession{}, err
 	}
 	roots := productRoots(l.base)
-	var best *historyEntry
+	var (
+		best     *historyEntry
+		bestRoot string
+	)
 	for _, root := range roots {
 		for _, e := range readHistory(root) {
 			if e.ConversationID == "" {
@@ -71,14 +74,16 @@ func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, erro
 			candidate := e
 			if best == nil || candidate.TimestampMS > best.TimestampMS {
 				best = &candidate
+				bestRoot = root
 			}
 		}
 	}
 	if best == nil {
 		// No recall log entry; fall back to the newest transcript file on
 		// disk so /resume still has something to offer.
-		if e, ok := newestTranscript(roots); ok {
+		if e, root, ok := newestTranscript(roots); ok {
 			best = &e
+			bestRoot = root
 		}
 	}
 	if best == nil {
@@ -100,8 +105,22 @@ func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, erro
 		Title:     firstNonEmpty(best.Title, "Antigravity "+truncate(best.ConversationID, 8)),
 		Preview:   preview,
 		TouchedAt: touched,
-		Source:    "jsonl",
+		Source:    sourceForRoot(bestRoot),
 	}, nil
+}
+
+// sourceForRoot labels which product subtree a conversation came from,
+// so callers can tell CLI (resumable by `agy`) from IDE (read-only for
+// the bot).
+func sourceForRoot(root string) string {
+	switch filepath.Base(root) {
+	case "antigravity-cli":
+		return "cli"
+	case "antigravity":
+		return "ide"
+	default:
+		return "jsonl"
+	}
 }
 
 // findTranscriptIn probes every root for the transcript of a
@@ -120,12 +139,14 @@ func findTranscriptIn(roots []string, conversationID string) string {
 }
 
 // newestTranscript scans brain/<id> dirs for the most recently modified
-// transcript and returns a synthetic history entry for it.
-func newestTranscript(roots []string) (historyEntry, bool) {
+// transcript and returns a synthetic history entry for it, along with
+// the root it was found under.
+func newestTranscript(roots []string) (historyEntry, string, bool) {
 	var (
-		best    historyEntry
-		bestMod time.Time
-		found   bool
+		best     historyEntry
+		bestRoot string
+		bestMod  time.Time
+		found    bool
 	)
 	for _, root := range roots {
 		brainDir := filepath.Join(root, "brain")
@@ -146,12 +167,13 @@ func newestTranscript(roots []string) (historyEntry, bool) {
 			mod := info.ModTime().UTC()
 			if !found || mod.After(bestMod) {
 				best = historyEntry{ConversationID: id, TimestampMS: mod.UnixMilli()}
+				bestRoot = root
 				bestMod = mod
 				found = true
 			}
 		}
 	}
-	return best, found
+	return best, bestRoot, found
 }
 
 // lastAssistantPreview returns the text of the last assistant turn in a
