@@ -63,7 +63,8 @@ func (a *Adapter) SendPrompt(ctx context.Context, sessionID, text string) (strin
 	if !a.manager.Started() {
 		return "", errors.New("kiro manager not running")
 	}
-	return a.manager.SendPrompt(ctx, sessionID, text)
+	reply, err := a.manager.SendPrompt(ctx, sessionID, text)
+	return stripAssistantSentinels(reply), err
 }
 
 // Revert returns ErrAgentCapabilitiesLimited because Kiro does not

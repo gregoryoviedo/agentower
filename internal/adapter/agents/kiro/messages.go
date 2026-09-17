@@ -105,7 +105,7 @@ func kiroContentText(content json.RawMessage) string {
 	}
 	var asString string
 	if err := json.Unmarshal(content, &asString); err == nil {
-		return strings.TrimSpace(asString)
+		return stripAssistantSentinels(strings.TrimSpace(asString))
 	}
 	var asParts []struct {
 		Type string `json:"type"`
@@ -124,5 +124,5 @@ func kiroContentText(content json.RawMessage) string {
 		}
 		b.WriteString(part.Text)
 	}
-	return strings.TrimSpace(b.String())
+	return stripAssistantSentinels(strings.TrimSpace(b.String()))
 }
