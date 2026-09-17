@@ -298,3 +298,79 @@ func TestSessionLocatorSetStateDir(t *testing.T) {
 		t.Fatalf("session id = %q, want after-swap", sess.SessionID)
 	}
 }
+
+// TestSessionLocatorMergesCLIStore makes sure the freshest session wins
+// across the VS Code and Copilot CLI stores, and that CLI sessions are
+// tagged so the adapter knows they are resumable.
+func TestSessionLocatorMergesCLIStore(t *testing.T) {
+	vscode := t.TempDir()
+	cli := t.TempDir()
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeFakeCopilotSQLite(t, vscode, []map[string]any{{
+		"id":         "ses-vscode",
+		"cwd":        "/Users/me/vscode",
+		"summary":    "vs code chat",
+		"created_at": now.Add(-2 * time.Hour).Format(time.RFC3339Nano),
+		"updated_at": now.Add(-2 * time.Hour).Format(time.RFC3339Nano),
+	}}, nil)
+	writeFakeCopilotSQLite(t, cli, []map[string]any{{
+		"id":         "ses-cli",
+		"cwd":        "/Users/me/cli",
+		"summary":    "cli chat",
+		"created_at": now.Add(-time.Minute).Format(time.RFC3339Nano),
+		"updated_at": now.Add(-time.Minute).Format(time.RFC3339Nano),
+	}}, nil)
+
+	loc, err := copilot.NewSessionLocator(copilot.SessionLocatorOptions{
+		StateDir:    vscode,
+		CLIStateDir: cli,
+		Now:         func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := loc.Locate(context.Background())
+	if err != nil {
+		t.Fatalf("locate: %v", err)
+	}
+	if sess.SessionID != "ses-cli" {
+		t.Fatalf("session id = %q, want the freshest (ses-cli)", sess.SessionID)
+	}
+	if sess.Source != "cli" {
+		t.Fatalf("source = %q, want cli", sess.Source)
+	}
+}
+
+// TestSessionLocatorPrefersFreshestVSCodeSession covers the opposite
+// ordering: a fresher VS Code session must still win over the CLI store.
+func TestSessionLocatorPrefersFreshestVSCodeSession(t *testing.T) {
+	vscode := t.TempDir()
+	cli := t.TempDir()
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeFakeCopilotSQLite(t, vscode, []map[string]any{{
+		"id":         "ses-vscode",
+		"cwd":        "/Users/me/vscode",
+		"summary":    "vs code chat",
+		"created_at": now.Format(time.RFC3339Nano),
+		"updated_at": now.Format(time.RFC3339Nano),
+	}}, nil)
+	writeFakeCopilotSQLite(t, cli, []map[string]any{{
+		"id":         "ses-cli",
+		"cwd":        "/Users/me/cli",
+		"summary":    "cli chat",
+		"created_at": now.Add(-time.Hour).Format(time.RFC3339Nano),
+		"updated_at": now.Add(-time.Hour).Format(time.RFC3339Nano),
+	}}, nil)
+
+	loc, err := copilot.NewSessionLocator(copilot.SessionLocatorOptions{StateDir: vscode, CLIStateDir: cli})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := loc.Locate(context.Background())
+	if err != nil {
+		t.Fatalf("locate: %v", err)
+	}
+	if sess.SessionID != "ses-vscode" || sess.Source != "sqlite" {
+		t.Fatalf("got id=%q source=%q, want ses-vscode/sqlite", sess.SessionID, sess.Source)
+	}
+}

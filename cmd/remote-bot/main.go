@@ -204,7 +204,8 @@ func main() {
 	}
 	if copilotDescriptor.Bin != "" {
 		loc, err := copilot.NewSessionLocator(copilot.SessionLocatorOptions{
-			StateDir: cfg.CopilotStateDir,
+			StateDir:    cfg.CopilotStateDir,
+			CLIStateDir: copilotCLIDir(),
 		})
 		if err == nil {
 			copilotLoc = loc
@@ -436,6 +437,21 @@ func copilotLaunchConfig(desc domain.AgentDescriptor) copilot.LaunchConfig {
 
 func isVSCodeCopilotBundle(path string) bool {
 	return strings.HasSuffix(path, "/dist/extension.js") || strings.Contains(path, ".vscode") && strings.HasSuffix(path, "extension.js")
+}
+
+// copilotCLIDir returns the Copilot CLI state dir (where the ACP server
+// keeps its session-store.db): COPILOT_HOME when set, otherwise
+// ~/.copilot. The locator uses it to tell resumable CLI sessions apart
+// from VS Code sessions, which live in a different store.
+func copilotCLIDir() string {
+	if env := strings.TrimSpace(os.Getenv("COPILOT_HOME")); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".copilot")
 }
 
 // opencodeBin returns the binary the opencode manager should spawn. If

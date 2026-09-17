@@ -38,18 +38,23 @@ import (
 // session as ActiveSession. Tied timestamps fall back to row
 // order.
 type SessionLocator struct {
-	mu   sync.RWMutex
-	root string
-	now  func() time.Time
+	mu      sync.RWMutex
+	root    string
+	cliRoot string
+	now     func() time.Time
 }
 
 // SessionLocatorOptions tunes the locator. StateDir overrides the
 // VS Code globalStorage path (used by tests and by users with a
-// custom install). When empty the locator derives the default from
-// the current OS.
+// custom install). CLIStateDir points at the Copilot CLI state dir
+// ($COPILOT_HOME or ~/.copilot); when set, sessions from its
+// session-store.db are merged in and tagged with Source "cli" so the
+// adapter knows they are resumable. When empty the locator only reads
+// VS Code (keeps tests hermetic).
 type SessionLocatorOptions struct {
-	StateDir string
-	Now      func() time.Time
+	StateDir    string
+	CLIStateDir string
+	Now         func() time.Time
 }
 
 // NewSessionLocator builds the locator. It does not touch the disk
@@ -68,50 +73,75 @@ func NewSessionLocator(opts SessionLocatorOptions) (*SessionLocator, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &SessionLocator{root: root, now: now}, nil
+	return &SessionLocator{root: root, cliRoot: strings.TrimSpace(opts.CLIStateDir), now: now}, nil
 }
 
 // Kind reports the agent this locator serves.
 func (l *SessionLocator) Kind() domain.AgentKind { return domain.AgentCopilot }
 
-// Locate returns the most recent Copilot Chat session. Returns
-// ErrNoActiveSession when the directory is missing, the SQLite
-// store has no rows, and the legacy JSON layout has no files.
+// Locate returns the most recent Copilot session across the VS Code
+// store and (when configured) the Copilot CLI store. Returns
+// ErrNoActiveSession when neither store has rows.
 func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.ActiveSession{}, err
 	}
 	l.mu.RLock()
 	root := l.root
+	cliRoot := l.cliRoot
 	l.mu.RUnlock()
-	if root == "" {
+	if root == "" && cliRoot == "" {
 		return domain.ActiveSession{}, domain.ErrNoActiveSession
 	}
-	if _, err := os.Stat(root); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return domain.ActiveSession{}, domain.ErrNoActiveSession
+	combined := make([]parsedSession, 0, 16)
+	if root != "" {
+		if _, err := os.Stat(root); err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				return domain.ActiveSession{}, fmt.Errorf("stat copilot state dir: %w", err)
+			}
+		} else {
+			sessions, err := readRootSessions(root, "sqlite", "fs")
+			if err != nil && !errors.Is(err, domain.ErrNoActiveSession) {
+				return domain.ActiveSession{}, err
+			}
+			combined = append(combined, sessions...)
 		}
-		return domain.ActiveSession{}, fmt.Errorf("stat copilot state dir: %w", err)
 	}
-	// Try the modern SQLite store first. The on-disk schema has
-	// shifted at least twice in the last year; the locator tolerates
-	// each variant and falls back to the JSON layout when SQLite is
-	// not present (older VS Code installs).
-	if sessions, err := readCopilotSQLite(root); err == nil && len(sessions) > 0 {
-		return pickFreshest(sessions), nil
-	} else if err != nil && !errors.Is(err, domain.ErrNoActiveSession) {
-		// A real error (not just "empty"); surface it so the
-		// caller logs and moves on.
-		return domain.ActiveSession{}, err
+	// The CLI store is best-effort: a missing or busy db must not hide
+	// the VS Code sessions.
+	if cliRoot != "" {
+		if sessions, err := readRootSessions(cliRoot, "cli", "cli"); err == nil {
+			combined = append(combined, sessions...)
+		}
 	}
-	sessions, err := readCopilotLegacyJSON(root)
-	if err != nil {
-		return domain.ActiveSession{}, err
-	}
-	if len(sessions) == 0 {
+	if len(combined) == 0 {
 		return domain.ActiveSession{}, domain.ErrNoActiveSession
 	}
-	return pickFreshest(sessions), nil
+	return pickFreshest(combined), nil
+}
+
+// readRootSessions prefers the SQLite store at root and falls back to
+// the legacy per-session JSON layout, tagging each entry with the given
+// source labels.
+func readRootSessions(root, sqliteSource, legacySource string) ([]parsedSession, error) {
+	sessions, err := readCopilotSQLite(root)
+	if err == nil {
+		for i := range sessions {
+			sessions[i].Source = sqliteSource
+		}
+		return sessions, nil
+	}
+	if !errors.Is(err, domain.ErrNoActiveSession) {
+		return nil, err
+	}
+	sessions, err = readCopilotLegacyJSON(root)
+	if err != nil {
+		return nil, err
+	}
+	for i := range sessions {
+		sessions[i].Source = legacySource
+	}
+	return sessions, nil
 }
 
 // SetStateDir swaps the watched directory. Used by Settings or the
@@ -120,6 +150,13 @@ func (l *SessionLocator) Locate(ctx context.Context) (domain.ActiveSession, erro
 func (l *SessionLocator) SetStateDir(root string) {
 	l.mu.Lock()
 	l.root = strings.TrimSpace(root)
+	l.mu.Unlock()
+}
+
+// SetCLIStateDir swaps the Copilot CLI state dir at runtime.
+func (l *SessionLocator) SetCLIStateDir(root string) {
+	l.mu.Lock()
+	l.cliRoot = strings.TrimSpace(root)
 	l.mu.Unlock()
 }
 

@@ -8,8 +8,11 @@ package copilot
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/gregoryoviedo/agentower/internal/adapter/agents/acp"
@@ -39,21 +42,46 @@ type LaunchConfig struct {
 type Manager struct {
 	bin string
 
-	mu      sync.Mutex
-	workdir string
-	running bool
-	agent   *acp.Agent
-	known   map[string]bool
+	mu          sync.Mutex
+	workdir     string
+	running     bool
+	agent       *acp.Agent
+	known       map[string]bool
+	cliStoreDir string
 }
 
 // NewManager builds the manager. cfg.Bin is the copilot CLI binary; the
-// ACP mode ignores LaunchBundle.
+// ACP mode ignores LaunchBundle. cliStoreDir is the Copilot CLI session
+// store ($COPILOT_HOME/session-store.db, default ~/.copilot) used to
+// tell resumable CLI sessions apart from VS Code ones.
 func NewManager(cfg LaunchConfig) *Manager {
 	bin := cfg.Bin
 	if bin == "" {
 		bin = "copilot"
 	}
-	return &Manager{bin: bin, known: map[string]bool{}}
+	return &Manager{bin: bin, known: map[string]bool{}, cliStoreDir: defaultCopilotCLIDir()}
+}
+
+// SetCLIStoreDir overrides the Copilot CLI state dir (used by tests and
+// by users who set COPILOT_HOME). An empty dir disables the resumability
+// pre-check.
+func (m *Manager) SetCLIStoreDir(dir string) {
+	m.mu.Lock()
+	m.cliStoreDir = dir
+	m.mu.Unlock()
+}
+
+// defaultCopilotCLIDir mirrors the Copilot CLI's own resolution:
+// COPILOT_HOME when set, otherwise ~/.copilot.
+func defaultCopilotCLIDir() string {
+	if env := os.Getenv("COPILOT_HOME"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".copilot")
 }
 
 // MarkStarted flags the manager as owning a Copilot subprocess.
@@ -127,15 +155,25 @@ func (m *Manager) ensureAgent(ctx context.Context) (*acp.Agent, error) {
 // SendPrompt resumes (when needed) the session and sends a message,
 // returning the assistant's text reply.
 func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (string, error) {
+	m.mu.Lock()
+	known := m.known[sessionID]
+	storeDir := m.cliStoreDir
+	m.mu.Unlock()
+	// Fail fast (before spawning the ACP server) when the session is not
+	// one the Copilot CLI can resume: VS Code sessions live in a
+	// different store and would only yield an opaque JSON-RPC -32002.
+	if !known && storeDir != "" && !sessionInCLIStore(storeDir, sessionID) {
+		return "", fmt.Errorf("%w: copilot session %s", domain.ErrSessionNotResumable, sessionID)
+	}
 	agent, err := m.ensureAgent(ctx)
 	if err != nil {
 		return "", err
 	}
-	m.mu.Lock()
-	known := m.known[sessionID]
-	m.mu.Unlock()
 	if !known {
 		if err := agent.ResumeSession(ctx, sessionID, m.WorkingDir()); err != nil {
+			if acp.ResourceNotFound(err) {
+				return "", fmt.Errorf("%w: copilot session %s", domain.ErrSessionNotResumable, sessionID)
+			}
 			return "", fmt.Errorf("resume copilot session: %w", err)
 		}
 		m.mu.Lock()
@@ -143,6 +181,28 @@ func (m *Manager) SendPrompt(ctx context.Context, sessionID, text string) (strin
 		m.mu.Unlock()
 	}
 	return agent.Prompt(ctx, sessionID, text)
+}
+
+// sessionInCLIStore reports whether the id exists in the Copilot CLI
+// session store. A missing db (CLI never used) yields false.
+func sessionInCLIStore(root, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	dbPath := filepath.Join(root, "session-store.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return false
+	}
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=ro", dbPath))
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM sessions WHERE id = ?`, sessionID).Scan(&count); err != nil {
+		return false
+	}
+	return count > 0
 }
 
 // CreateSession starts a fresh Copilot session via ACP.
