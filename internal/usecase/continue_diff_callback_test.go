@@ -129,8 +129,14 @@ func TestContinueResolvesDirectoryFromLocator(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := handler.HandleCommand(context.Background(), chatID, "/continue", nil); err != nil {
+	// The first activation of a session carries the local-UI notice; the
+	// second one must not repeat it.
+	resp, err := handler.HandleCommand(context.Background(), chatID, "/continue", nil)
+	if err != nil {
 		t.Fatalf("continue: %v", err)
+	}
+	if !strings.Contains(resp.Text, "El IDE de Kiro") {
+		t.Fatalf("continue reply = %q, want the Kiro local-UI notice", resp.Text)
 	}
 	state, err := store.LoadRuntimeState(context.Background())
 	if err != nil {
@@ -138,5 +144,13 @@ func TestContinueResolvesDirectoryFromLocator(t *testing.T) {
 	}
 	if state.RelativePath != "proj" || state.AgentKind != domain.AgentKiro {
 		t.Fatalf("state = %+v, want RelativePath=proj AgentKind=kiro", state)
+	}
+
+	resp, err = handler.HandleCommand(context.Background(), chatID, "/continue", nil)
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if strings.Contains(resp.Text, "El IDE de Kiro") {
+		t.Fatalf("second continue reply = %q, want no repeated notice", resp.Text)
 	}
 }

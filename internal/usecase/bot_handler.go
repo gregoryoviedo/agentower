@@ -36,6 +36,8 @@ type Handler struct {
 	staleAfter    time.Duration
 	now           func() time.Time
 	startMu       sync.Mutex
+	noticeMu      sync.Mutex
+	notified      map[string]bool
 }
 
 // SessionController is the surface Handler needs from the SessionWatcher.
@@ -203,7 +205,11 @@ func (h *Handler) HandleText(ctx context.Context, chatID int64, text string) (do
 	if reply == "" {
 		return domain.BotResponse{Text: "Agentower terminó la respuesta sin texto."}, nil
 	}
-	return domain.BotResponse{Text: truncateForTelegram(reply, kind)}, nil
+	notice := ""
+	if h.firstNoticeFor(kind, state.SessionID) {
+		notice = sessionNoticeFor(kind)
+	}
+	return domain.BotResponse{Text: appendNotice(reply, notice, kind)}, nil
 }
 
 // adapterForSession resolves the adapter that owns the followed
@@ -290,6 +296,65 @@ func startAgentError(kind domain.AgentKind, err error) string {
 		return fmt.Sprintf("No pude iniciar %s: no encontré un directorio de proyecto válido para esa sesión.", kind)
 	}
 	return fmt.Sprintf("No pude iniciar %s: %s", kind, err)
+}
+
+// firstNoticeFor reports whether the "your local agent UI does not
+// live-refresh messages sent from Telegram" note should be shown for
+// this agent+session. It returns true exactly once per pair for the
+// lifetime of the process, so the note does not repeat on every prompt.
+func (h *Handler) firstNoticeFor(kind domain.AgentKind, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	key := string(kind) + "|" + sessionID
+	h.noticeMu.Lock()
+	defer h.noticeMu.Unlock()
+	if h.notified == nil {
+		h.notified = map[string]bool{}
+	}
+	if h.notified[key] {
+		return false
+	}
+	h.notified[key] = true
+	return true
+}
+
+// sessionNoticeFor renders the one-time note shown when a session is
+// activated or first prompted. The wording names the agent's local
+// surface so the user knows where the turns will not appear live.
+func sessionNoticeFor(kind domain.AgentKind) string {
+	surface := map[domain.AgentKind]string{
+		domain.AgentKiro:        "El IDE de Kiro",
+		domain.AgentOpenCode:    "La TUI de opencode",
+		domain.AgentClaude:      "La terminal de Claude Code",
+		domain.AgentCopilot:     "La interfaz de GitHub Copilot",
+		domain.AgentCodex:       "La terminal de Codex",
+		domain.AgentAntigravity: "El IDE de Antigravity",
+	}[kind]
+	if surface == "" {
+		if kind == "" {
+			surface = "La interfaz del agente"
+		} else {
+			surface = "La interfaz de " + string(kind)
+		}
+	}
+	return fmt.Sprintf("ℹ️ %s no refleja en vivo los mensajes que enviás desde Telegram. Para verlos ahí, reabrí o recargá la sesión.", surface)
+}
+
+// appendNotice adds the one-time session note to a reply, reserving room
+// for it so truncation never drops the note on long replies.
+func appendNotice(reply, notice string, kind domain.AgentKind) string {
+	if notice == "" {
+		return truncateForTelegram(reply, kind)
+	}
+	body := reply
+	if budget := telegramMaxMessageLen - len(notice) - 4; len(body) > budget {
+		if budget < 0 {
+			budget = 0
+		}
+		body = body[:budget] + "…"
+	}
+	return strings.TrimRight(body, "\n") + "\n\n" + notice
 }
 
 // startTypingIndicator fires a "typing…" chat action now and keeps
@@ -791,10 +856,13 @@ func (h *Handler) continueLast(ctx context.Context, chatID int64) (domain.BotRes
 	if preview == "" {
 		preview = "Sesión sin previsualización."
 	}
-	return domain.BotResponse{
-		Text: fmt.Sprintf("Sesión `%s` reactivada.\nProyecto: `%s`\n%s",
-			snapshot.SessionID, orDefault(snapshot.ProjectName, snapshot.Directory), preview),
-	}, nil
+	notice := ""
+	if h.firstNoticeFor(state.AgentKind, snapshot.SessionID) {
+		notice = sessionNoticeFor(state.AgentKind)
+	}
+	body := fmt.Sprintf("Sesión `%s` reactivada.\nProyecto: `%s`\n%s",
+		snapshot.SessionID, orDefault(snapshot.ProjectName, snapshot.Directory), preview)
+	return domain.BotResponse{Text: appendNotice(body, notice, state.AgentKind)}, nil
 }
 
 // continuar is the /continuar handler. It asks every registered
@@ -983,9 +1051,12 @@ func (h *Handler) confirmActiveSession(ctx context.Context, chatID int64, kindRa
 	if label == "" {
 		label = "el agente"
 	}
-	return domain.BotResponse{
-		Text: fmt.Sprintf("Listo: cambiaste a la sesión `%s` en `%s`. Enviame el próximo prompt y lo mando a esa sesión.", truncateID(sessionID), label),
-	}, nil
+	notice := ""
+	if h.firstNoticeFor(agentKind, sessionID) {
+		notice = sessionNoticeFor(agentKind)
+	}
+	body := fmt.Sprintf("Listo: cambiaste a la sesión `%s` en `%s`. Enviame el próximo prompt y lo mando a esa sesión.", truncateID(sessionID), label)
+	return domain.BotResponse{Text: appendNotice(body, notice, agentKind)}, nil
 }
 
 func truncateID(id string) string {

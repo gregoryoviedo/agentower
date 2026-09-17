@@ -230,6 +230,60 @@ func TestHandleTextStartsTheAgentOnFirstPrompt(t *testing.T) {
 	}
 }
 
+// TestHandleTextShowsLocalUINoticeOncePerSession guards the one-time
+// "your local agent UI does not live-refresh" note: it must appear on
+// the first prompt of a session, not repeat on the next one, and show
+// again when the user moves to a different session.
+func TestHandleTextShowsLocalUINoticeOncePerSession(t *testing.T) {
+	root := t.TempDir()
+	opencodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost {
+			fmt.Fprint(w, `{"info":{"id":"m1","role":"assistant"},"parts":[{"type":"text","text":"ok"}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer opencodeServer.Close()
+
+	store, _ := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	defer store.Close()
+	client, _ := agents_opencode.NewClient(opencodeServer.URL, &http.Client{Timeout: time.Second})
+
+	handler := usecase.NewHandler(store, &fakeRegistry{client: client}, &fakeServer{started: true}, root)
+	ctx := context.Background()
+	if err := store.SaveRuntimeState(ctx, domain.RuntimeState{WorkspaceRoot: root, SessionID: "ses_1", AgentKind: domain.AgentOpenCode}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := handler.HandleText(ctx, 42, "hola")
+	if err != nil {
+		t.Fatalf("HandleText err=%v", err)
+	}
+	if !strings.Contains(resp.Text, "La TUI de opencode") {
+		t.Fatalf("first reply = %q, want the local-UI notice", resp.Text)
+	}
+
+	resp, err = handler.HandleText(ctx, 42, "otra")
+	if err != nil {
+		t.Fatalf("HandleText err=%v", err)
+	}
+	if strings.Contains(resp.Text, "La TUI de opencode") {
+		t.Fatalf("second reply = %q, want no repeated notice", resp.Text)
+	}
+
+	if err := store.SaveRuntimeState(ctx, domain.RuntimeState{WorkspaceRoot: root, SessionID: "ses_2", AgentKind: domain.AgentOpenCode}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = handler.HandleText(ctx, 42, "hola")
+	if err != nil {
+		t.Fatalf("HandleText err=%v", err)
+	}
+	if !strings.Contains(resp.Text, "La TUI de opencode") {
+		t.Fatalf("new-session reply = %q, want the notice again", resp.Text)
+	}
+}
+
 func TestHandleTextWithoutSessionPromptsToContinue(t *testing.T) {
 	root := t.TempDir()
 	opencodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
