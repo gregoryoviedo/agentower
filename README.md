@@ -62,7 +62,7 @@ superficie de ataque pública más allá de la API de bots de Telegram.
 - macOS, Linux o Windows para el binario Go.
 - macOS 13.0+ para la app nativa de menú-barra.
 - Windows 10/11 x64 para la app de bandeja (`Agentower.exe`).
-- Go 1.22 o superior.
+- Go 1.25 o superior.
 - El **.NET 8 SDK** si vas a compilar el wrapper de Windows.
 - Al menos uno de los siguientes agentes instalado localmente:
   - `opencode` (CLI; instala vía `brew install anomalyco/tap/opencode`)
@@ -393,7 +393,7 @@ válida el bot arranca solo; no hace falta pulsar Iniciar.
 
 - macOS con **Xcode** y **Xcode command-line tools** (`xcode-select --install`).
 - **XcodeGen** (`brew install xcodegen` si falta).
-- **Go** 1.22+ en `PATH`.
+- **Go** 1.25+ en `PATH`.
 - **Python 3** con **Pillow** (`pip3 install Pillow`) para regenerar
   los iconos monocromos. Requerido solo si corres `make icons`.
 
@@ -419,7 +419,7 @@ Esto:
 
 Salida: `dist\Agentower.exe`.
 
-Requiere **Go 1.22+** y el **.NET 8 SDK**. Detalles en
+Requiere **Go 1.25+** y el **.NET 8 SDK**. Detalles en
 [`windows/README.md`](windows/README.md).
 
 ### Uso
@@ -563,7 +563,7 @@ Para construir el wrapper de Windows:
 ```
 
 CI: cada push y PR ejecuta `go test -race` con `-coverprofile` sobre
-Go 1.23 (Ubuntu) y `golangci-lint` sobre Ubuntu, más un job de Windows
+Go 1.25 (Ubuntu) y `golangci-lint` sobre Ubuntu, más un job de Windows
 que compila `Agentower.exe` y corre su `--selftest`. Las dependencias se
 mantienen al día vía Dependabot (`gomod`, `github-actions`, `swift`),
 agrupadas en PRs separados por tipo. La configuración del linter vive en

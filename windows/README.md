@@ -35,7 +35,7 @@ lo hace en macOS.
 
 ## Requisitos de build
 
-- **Go 1.22+** (`winget install GoLang.Go`).
+- **Go 1.25+** (`winget install GoLang.Go`).
 - **.NET 8 SDK** (`winget install Microsoft.DotNet.SDK.8`).
 - Windows 10/11 x64.
 

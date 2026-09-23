@@ -191,7 +191,7 @@ The wrapper is the convenient launcher on both platforms:
 ## Project infrastructure
 
 - **CI** (`.github/workflows/ci.yml`): `go test -race -coverprofile` on
-  Go 1.23 (Ubuntu) plus `golangci-lint` on Ubuntu, and a `windows` job
+  Go 1.25 (Ubuntu) plus `golangci-lint` on Ubuntu, and a `windows` job
   that cross-compiles the bot, builds `Agentower.exe` and runs its
   `--selftest`. Runs on every push and PR to `main`.
 - **Linting** (`.golangci.yml`): `errcheck`, `govet`, `staticcheck`,
