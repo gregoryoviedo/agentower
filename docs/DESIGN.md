@@ -469,7 +469,7 @@ documented in the repo history.
 - When you add or change a settings field, an agent, or a notification
   flow, update **both** wrappers (`macos/Agentower` and
   `windows/Agentower`) so they stay feature-equivalent.
-- CI runs `go test -race -coverprofile` on Go 1.23 (Ubuntu) plus
+- CI runs `go test -race -coverprofile` on Go 1.25 (Ubuntu) plus
   `golangci-lint` (config in `.golangci.yml`), and a Windows job that
   cross-compiles the bot, builds `Agentower.exe`, and runs its
   `--selftest`. Dependabot opens weekly PRs grouped by ecosystem

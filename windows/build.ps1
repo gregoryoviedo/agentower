@@ -10,7 +10,7 @@
   2. Publishes the WinForms wrapper as a single-file, self-contained
      Agentower.exe into dist/.
 
-  Requires Go 1.22+ and the .NET 8 SDK on PATH (or in their default
+  Requires Go 1.25+ and the .NET 8 SDK on PATH (or in their default
   install locations).
 #>
 [CmdletBinding()]
